@@ -1,0 +1,6 @@
+name "powerwatch"
+description "Powerline watcher"
+authors "dd86k <dd@dax.moe>"
+copyright "Copyright © 2025, dd86k <dd@dax.moe>"
+license "proprietary"
+dependency "libasound-d" version="~>2.0.0"

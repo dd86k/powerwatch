@@ -1,0 +1,14 @@
+- recording: Pass configuration
+- simulator
+  use std.concurrency to send commands, like selecting an audio interface, etc.
+  thread 1 creates thread 2
+  thread 2 sends PCM recorders available (Asound obj), sents list to thread 1
+  thread 1 asks which interface to use, sends selection to thread 2
+- record buffer when something happens
+- auto normalize (alsa does this with plughw:)
+
+# testing
+
+plughw:CARD=Generic,DEV=0
+or
+hw:CARD=Generic,DEV=0 (can't force to mono)

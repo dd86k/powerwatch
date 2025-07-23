@@ -1,0 +1,11 @@
+In summary, this listens to an ALSA PCM capture interface and automatically
+records a memory buffer if the learned magnitude of the target frequency drops
+or picks up again.
+
+The code is in a bit of a rough shape, don't expect too much out of it.
+
+TODO:
+- Support hw: (and stereo) interfaces
+
+LICENSE: CC0 1.0 Universal
+THANKS: pelp3;, cool_lantern, syncpulse
