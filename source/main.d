@@ -233,10 +233,19 @@ struct CLIOptions
     bool verbose;
 }
 
+template DSTRVER(uint ver)
+{
+    enum DSTRVER =
+        cast(char)((ver / 1000) + '0') ~ "." ~
+        cast(char)(((ver % 1000) / 100) + '0') ~
+        cast(char)(((ver % 100) / 10) + '0') ~
+        cast(char)((ver % 10) + '0');
+}
 void print_version()
 {
     import core.stdc.stdlib : exit;
     writeln("Compiled: ", __TIMESTAMP__);
+    writeln("Compiler: ", __VENDOR__, " ", DSTRVER!__VERSION__);
     exit(0);
 }
 
@@ -350,7 +359,6 @@ int main(string[] args)
         default:
         }
         goto Lread;
-        break;
     case "analyze": // analyze sound file (or do "analyze-json"/--json)
         if (args.length < 2)
         {
