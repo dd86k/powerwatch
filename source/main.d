@@ -85,129 +85,141 @@ enum State : ubyte { down, up }
 void thread_listen(Tid parent, string device, AsoundConfig config, int targetfreq, int binsize,
     bool verbose)
 {
-    scope Asound alsa = new Asound();
+    try
+    {
+        scope Asound alsa = new Asound();
     
-    // TODO: channel autodetection
-    
-    // HACK: Make it easier to perform FFT since class Fft only takes base-2 lengths
-    config.period_size = binsize;
-    
-    // To reduce manipulation errors, make a structure
-    enum AMT = 40;  // number of record "slices". 32K @ 48000 samp/s * 40 = 6.827 s
-                    // 32K (FFT) * 40 = 1 310 720 samples
-                    // 1310720 samples / 96000 samples/s = ~13.65(3) seconds
-    short[] backbuffer = new short[config.period_size * AMT]; // S16
-    backbuffer[] = 0;
-    size_t backi; /// backbuffer "slice" index
-    bool holding; /// If true, we're holding for a recording soon
-    State state = State.up; /// Last known state, assume up
-    enum REC0 = AMT / 2; // record after this many "slices"
-    size_t reci; /// Record/Hold index, up until REC0
-    
-    // HACK: Recoding notification matching binsize for easier analysis
-    scope FreqAnalyzer analyzer = new FreqAnalyzer(binsize);
-    
-    //CostasLoop cl = CostasLoop(targetfreq - .5, targetfreq + .5);
-    short[] buffer =  new short[config.period_size]; // for alsa
-    float threshold = 0.0;
-    
-    if (verbose)
-        stderr.writeln("Listening through ", device, "...");
-    StopWatch sw;
-    sw.start();
-    alsa.listen(device, config, buffer.ptr, (short[] samples, ref int status) {
-        Duration d0 = sw.peek();
+        // TODO: channel autodetection
         
-        // copy period to back buffer
-        import core.stdc.string : memcpy;
-        if (backi >= AMT) backi = 0; // round-trip
-        memcpy(
-            // To slice of buffer
-            backbuffer.ptr + (backi * config.period_size),
-            // From samples we got
-            samples.ptr,
-            // one second worth to match period size
-            config.period_size * ushort.sizeof
-        );
+        // HACK: Make it easier to perform FFT since class Fft only takes base-2 lengths
+        config.period_size = binsize;
         
-        // estimate frequency (wip)
-        /*
-        foreach (short samp; samples)
-            cl.update(samp, config.sample_rate);
-        */
+        // To reduce manipulation errors, make a structure
+        enum AMT = 40;  // number of record "slices". 32K @ 48000 samp/s * 40 = 6.827 s
+                        // 32K (FFT) * 40 = 1 310 720 samples
+                        // 1310720 samples / 96000 samples/s = ~13.65(3) seconds
+        short[] backbuffer = new short[config.period_size * AMT]; // S16
+        backbuffer[] = 0;
+        size_t backi; /// backbuffer "slice" index
+        bool holding; /// If true, we're holding for a recording soon
+        State state = State.up; /// Last known state, assume up
+        enum REC0 = AMT / 2; // record after this many "slices"
+        size_t reci; /// Record/Hold index, up until REC0
         
-        // Analyze
-        ResultFrame frame = analyzer.analyze(samples, config.sample_rate, targetfreq);
+        // HACK: Recoding notification matching binsize for easier analysis
+        scope FreqAnalyzer analyzer = new FreqAnalyzer(binsize);
         
-        // Get most important time and unit for simpler formatting
-        Duration d1 = sw.peek();
-        ReducedDur rd = reduceDuration(d1 - d0);
+        //CostasLoop cl = CostasLoop(targetfreq - .5, targetfreq + .5);
+        short[] buffer =  new short[config.period_size]; // for alsa
+        float threshold = 0.0;
         
-        // Get status from parent thread
-        // This is a suboptimal way to do polling
-        // TODO: Fuse MsgQuit/MsgSave together to reduce on "polling" overhead
-        if (receiveTimeout(dur!"msecs"(1), (MsgQuit mq) {}))
-        {
-            status = 0;
-            return;
-        }
-        receiveTimeout(dur!"msecs"(1), (MsgSave ms) {
-            string name = dumpname();
-            dumpbuffer(name, backbuffer, config.period_size, AMT, backi, config.sample_rate);
-            if (verbose)
-                stderr.writeln("Du = ", name);
-            send(parent, MsgDone());
-        });
-        
-        // print info
-        /*
-        stderr.writefln("PT = %3d %s, M(%d) = %10.1f, FE(WIP) = %.3f Hz",
-            rd.t, rd.unit,
-            targetfreq, frame.magnitude,
-            cl.frequency);
-        */
         if (verbose)
-            stderr.writefln("PT = %3d %s, M(%d) = %10.1f",
-                rd.t, rd.unit,
-                targetfreq, frame.magnitude);
-        
-        // Threshold needs to be set after some time.
-        // ALSA software interface (plughw:) might normalize things (better that than
-        // having clipping) so wait for a bit before setting threshold.
-        if (threshold == 0.0 && d1 >= dur!"seconds"(5))
-        {
-            threshold = frame.magnitude / 2;
-            if (verbose)
-                stderr.writefln("Th = %.1f", threshold);
-        }
-        
-        State newstate = frame.magnitude < threshold ? State.down : State.up;
-        
-        // It'd be pointless to dump the buffer when the threshold isn't set or
-        // when we're already waiting to capture enough data for a dump.
-        //
-        // So only initiate a recording if (1) a threshold is set, (2) there isn't
-        // a recording being held, and (3) the state changed (e.g., up to down).
-        if (threshold != 0.0 && holding == false && state != newstate)
-        {
-            holding = true;
-            reci = 0;
-            state = newstate;
-        }
-        
-        // Holding a recording until "record index"
-        if (holding == true && ++reci == REC0)
-        {
-            string name = dumpname();
-            dumpbuffer(name, backbuffer, config.period_size, AMT, backi, config.sample_rate);
-            stderr.writeln("Du = ", name);
+            stderr.writeln("Listening through ", device, "...");
+        StopWatch sw;
+        sw.start();
+        alsa.listen(device, config, buffer.ptr, (short[] samples, ref int status) {
+            Duration d0 = sw.peek();
             
-            // reset record index
-            holding = false;
-        }
-        
-        backi++;
-    });
+            // copy period to back buffer
+            import core.stdc.string : memcpy;
+            if (backi >= AMT) backi = 0; // round-trip
+            memcpy(
+                // To slice of buffer
+                backbuffer.ptr + (backi * config.period_size),
+                // From samples we got
+                samples.ptr,
+                // one second worth to match period size
+                config.period_size * ushort.sizeof
+            );
+            
+            // estimate frequency (wip)
+            /*
+            foreach (short samp; samples)
+                cl.update(samp, config.sample_rate);
+            */
+            
+            // Analyze
+            ResultFrame frame = analyzer.analyze(samples, config.sample_rate, targetfreq);
+            
+            // Get most important time and unit for simpler formatting
+            Duration d1 = sw.peek();
+            ReducedDur rd = reduceDuration(d1 - d0);
+            
+            // Get status from parent thread
+            // This is a suboptimal way to do polling
+            // TODO: Fuse MsgQuit/MsgSave together to reduce on "polling" overhead
+            if (receiveTimeout(dur!"msecs"(1), (MsgQuit mq) {}))
+            {
+                status = 0;
+                return;
+            }
+            receiveTimeout(dur!"msecs"(1), (MsgSave ms) {
+                string name = dumpname();
+                dumpbuffer(name, backbuffer, config.period_size, AMT, backi, config.sample_rate);
+                if (verbose)
+                    stderr.writeln("Du = ", name);
+                send(parent, MsgDone());
+            });
+            
+            // print info
+            /*
+            stderr.writefln("PT = %3d %s, M(%d) = %10.1f, FE(WIP) = %.3f Hz",
+                rd.t, rd.unit,
+                targetfreq, frame.magnitude,
+                cl.frequency);
+            */
+            if (verbose)
+                stderr.writefln("PT = %3d %s, M(%d) = %10.1f",
+                    rd.t, rd.unit,
+                    targetfreq, frame.magnitude);
+            
+            // Threshold needs to be set after some time.
+            // ALSA software interface (plughw:) might normalize things (better that than
+            // having clipping) so wait for a bit before setting threshold.
+            if (threshold == 0.0 && d1 >= dur!"seconds"(5))
+            {
+                // Make sure we have something and not just zero.
+                float t = frame.magnitude / 2;
+                if (t > 0.0)
+                {
+                    threshold = t;
+                    if (verbose)
+                        stderr.writefln("Th = %.1f", threshold);
+                }
+            }
+            
+            State newstate = frame.magnitude < threshold ? State.down : State.up;
+            
+            // It'd be pointless to dump the buffer when the threshold isn't set or
+            // when we're already waiting to capture enough data for a dump.
+            //
+            // So only initiate a recording if (1) a threshold is set, (2) there isn't
+            // a recording being held, and (3) the state changed (e.g., up to down).
+            if (threshold != 0.0 && holding == false && state != newstate)
+            {
+                holding = true;
+                reci = 0;
+                state = newstate;
+            }
+            
+            // Holding a recording until "record index"
+            if (holding == true && ++reci == REC0)
+            {
+                string name = dumpname();
+                dumpbuffer(name, backbuffer, config.period_size, AMT, backi, config.sample_rate);
+                stderr.writeln("Du = ", name);
+                
+                // reset record index
+                holding = false;
+            }
+            
+            backi++;
+        });
+    }
+    catch (Exception ex)
+    {
+        stderr.writeln("!! EXCEPTION: ", ex);
+    }
     
     send(parent, MsgQuit());
 }
