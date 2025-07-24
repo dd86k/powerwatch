@@ -4,6 +4,11 @@ or picks up again.
 
 The code is in a bit of a rough shape, don't expect too much out of it.
 
+REQUIREMENTS:
+- DUB
+- A D compiler (dmd, gdc, or ldc2)
+- libasound2-dev (ALSA dev library)
+
 TODO:
 - Support hw: (and stereo) interfaces
 
