@@ -4,3 +4,10 @@ authors "dd86k <dd@dax.moe>"
 copyright "Copyright © 2025, dd86k <dd@dax.moe>"
 license "proprietary"
 dependency "libasound-d" version="~>2.0.0"
+
+buildType "release-native" {
+	buildOptions "releaseMode" "optimize" "inline" "noBoundsCheck"
+	dflags "-mcpu=native" platform="ldc"
+	dflags "-mtune=native" platform="gdc"
+	dflags "-mcpu=native" platform="dmd"
+}
