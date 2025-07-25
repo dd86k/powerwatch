@@ -88,70 +88,12 @@ Complex!F dftfreq(F = double, R)(R range, int rate, int target)
 
 struct ResultFrame
 {
-    float t0; // seconds
-    float t1; // seconds
     float magnitude;
     float phase;
 }
 struct Result
 {
     ResultFrame[] frames;
-}
-Result analyzedft(short[] samples, int rate, size_t binsize = 16384, int target = 60)
-{
-    // 1. slices of n samples
-    // 2. dft on that thing
-    // 3. get magnitude closest to 60 Hz (or 50 Hz as an option)
-    // 4. check magnitude against a threshold
-    
-    import std.range : chunks;
-
-    float r = cast(float)binsize/rate; // time rate
-    float t = 0; // total time
-    Result results;
-    // NOTE: pelp3; suggested me to use 1/256 samples (use 1, skip 255) for downsampling
-    foreach (s; samples.chunks(binsize))
-    {
-        // 1. class Fft only takes base-2 slices
-        // 2. not enough data and cutoff would seem weird
-        if (s.length != binsize)
-            break;
-        Complex!float bin = dftfreq!float(s, rate, target);
-        // 0-10000 : usually dead, >=1.0e07 (or at least 68595400.0): usually alive
-        results.frames ~= ResultFrame(t, t += r, magnitude!float(bin), phase!float(bin));
-    }
-    return results;
-}
-Result analyzefft(short[] samples, int rate, size_t binsize = 16384, int target = 60)
-{
-    // 1. slices of n samples
-    // 2. fft on that thing
-    // 3. get magnitude closest to 60 Hz (or 50 Hz as an option)
-    // 4. check magnitude against a threshold
-
-    import std.numeric : Fft;
-    import std.range : chunks;
-    // 16384 good enough looking in Audacity spectrum analyzer
-    // 44100/16384=~2.69165 Hz slices
-    //size_t binidx = floor( (target * FFTSIZE) / fmtchunk.samplerate );
-    size_t binidx = (target * binsize) / rate;
-    scope Fft f = new Fft(binsize);
-    float r = cast(float)binsize/rate; // time rate
-    float t = 0; // total time
-    Result results;
-    // NOTE: pelp3; suggested me to use 1/256 samples (use 1, skip 255) for downsampling
-    foreach (s; samples.chunks(binsize))
-    {
-        // 1. class Fft only takes base-2 slices
-        // 2. not enough data and cutoff would seem weird
-        if (s.length != binsize)
-            break;
-        Complex!float[] bins = f.fft!float(s);
-        Complex!float bin = bins[binidx];
-        // 0-10000 : usually dead, >=1.0e07 (or at least 68595400.0): usually alive
-        results.frames ~= ResultFrame(t, t += r, magnitude!float(bin), phase!float(bin));
-    }
-    return results;
 }
 
 // NOTE: Mnemonic to get a clearer picture of operations
@@ -167,16 +109,27 @@ unittest
     import std.math : isClose;
     assert(isClose(freqresolution(64 * 1024, 44100), 0.672912598));
 }
+
 // Get bin to frequency target given its resolution
-size_t fftbin(int target, size_t binsize, int samplerate)
+size_t fftbinidx(int target, size_t binsize, int samplerate)
 {
     import std.math : round;
     return cast(size_t)(round(cast(float)target * binsize / samplerate));
 }
 unittest
 {
-    import std.math : isClose;
-    assert(fftbin(1209, 4 * 1024, 44100) == 112); // 112.3
+    assert(fftbinidx(1209, 4 * 1024, 44100) == 112); // 112.3
+}
+
+/// Apply a Blackman Window function to a sample.
+/// Params:
+///   v = Float value between -1.0 to 1.0.
+///   n = Index.
+///   N = Total amount of samples.
+/// Returns: New 
+F blackman_window(F = double)(F v, int n, int N)
+{
+    return v * (0.42 - 0.5 * cos(2 * PI * n / (N - 1)) + 0.08 * cos(4 * PI * n / (N - 1)));
 }
 
 /*
@@ -203,13 +156,33 @@ class FreqAnalyzer
         o = new Fft(binsize);
     }
     
-    static
-    F blackman_window(F = double)(int n, int N)
+    ResultFrame fft(short[] samples, int rate, int target = 60, bool apply_window = true)
     {
-        return 0.42 - 0.5 * cos(2 * PI * n / (N - 1)) + 0.08 * cos(4 * PI * n / (N - 1));
+        if (samples.length != binsize) // due to class Fft
+            return ResultFrame();
+        
+        // Apply Blackman window
+        if (apply_window)
+        {
+            int N = cast(int)samples.length;
+            for (int i; i < N; i++)
+            {
+                float f = cast(float)samples[i] / 32767;
+                samples[i] = cast(short)(blackman_window!float(f, i, N) * 32767);
+            }
+        }
+        
+        // Get bin
+        size_t binidx = fftbinidx(target, binsize, rate);
+        Complex!float[] bins = o.fft!float(samples); // base-2 sizes only
+        if (binidx >= bins.length / 2)
+            throw new Exception("Target out of Nyquist frequency");
+        Complex!float bin = bins[binidx];
+        
+        return ResultFrame(magnitude!float(bin), phase!float(bin));
     }
     
-    ResultFrame fft(short[] samples, int rate, int target = 60, bool apply_window = true)
+    ResultFrame dft(short[] samples, int rate, int target = 60, bool apply_window = true)
     {
         // Apply Blackman window
         if (apply_window)
@@ -218,19 +191,13 @@ class FreqAnalyzer
             for (int i; i < N; i++)
             {
                 float f = cast(float)samples[i] / 32767;
-                samples[i] = cast(short)(f * blackman_window!float(i, N) * 32767);
+                samples[i] = cast(short)(blackman_window!float(f, i, N) * 32767);
             }
         }
         
-        // Get bin
-        //size_t binidx = target * binsize / rate;
-        size_t binidx = fftbin(target, binsize, rate);
-        Complex!float[] bins = o.fft!float(samples); // base-2 sizes only
-        if (binidx >= bins.length / 2)
-            throw new Exception("Target out of Nyquist frequency");
-        Complex!float bin = bins[binidx];
+        Complex!float bin = dftfreq!float(samples, rate, target);
         
-        return ResultFrame(0, 0, magnitude!float(bin), phase!float(bin));
+        return ResultFrame(magnitude!float(bin), phase!float(bin));
     }
     
 private:

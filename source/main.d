@@ -1,19 +1,28 @@
 module main;
 
-import std.stdio;
-import std.getopt;
-import std.complex : Complex;
 import core.math : sqrt;
-import std.math.constants : PI;
-import std.math.trigonometry : cos, sin, atan2;
+import std.complex : Complex;
 import std.concurrency;
 import std.datetime : DateTime, Duration, dur;
 import std.datetime.stopwatch : StopWatch;
 import std.datetime.systime : Clock, SysTime;
+import std.format : format;
+import std.getopt;
+import std.math.constants : PI;
+import std.math.trigonometry : cos, sin, atan2;
+import std.range : chunks;
+import std.stdio;
 import coastas;
-import wav;
 import freq;
 import snddrv.asound;
+import wav;
+
+// TODO: Interface listening
+//       "Learn" the current peak after 5 seconds, divide by 2, set as new threshold
+//       Warn if clipping occurs (e.g., in S16, if PCM values reach short.min/max)
+// TODO: Loop end
+//       When the size of the samples doesn't fit bin length (foreach chunks),
+//       data should be zero'd instead of just ending the loop.
 
 struct ReducedDur
 {
@@ -31,10 +40,6 @@ ReducedDur reduceDuration(Duration d)
         return ReducedDur(cast(int)d.total!"hnsecs"(), "hs");
     return ReducedDur(cast(int)d.total!"nsecs"(), "ns");
 }
-
-// TODO: Interface listening
-//       "Learn" the current peak after 5 seconds, divide by 2, set as new threshold
-//       Warn if clipping occurs (e.g., in S16, if PCM values reach short.min/max)
 
 // thread 0 wants info
 struct MsgQuit
@@ -98,9 +103,8 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
         // To reduce manipulation errors, make a structure
         enum AMT = 40;  // number of record "slices". 32K @ 48000 samp/s * 40 = 6.827 s
                         // 32K (FFT) * 40 = 1 310 720 samples
-                        // 1310720 samples / 96000 samples/s = ~13.65(3) seconds
-        short[] backbuffer = new short[config.period_size * AMT]; // S16
-        backbuffer[] = 0;
+                        // 1310720 samples / 96000 samples/s = ~13.65(3) seconds (~3.66 MiB)
+        short[] backbuffer = new short[config.period_size * AMT]; // S16, already zero'd
         size_t backi; /// backbuffer "slice" index
         bool holding; /// If true, we're holding for a recording soon
         State state = State.up; /// Last known state, assume up
@@ -229,16 +233,20 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
 // CLI
 //
 
+enum DEFAULT_BINSIZE  = 32 * 1024;
+enum DEFAULT_TARGET   = 60;
+enum DEFAULT_SAMPRATE = 48000;
+
 struct CLIOptions
 {
     /// Bin size.
     // 60 (Hz) * 32K / 48000 (samp/s) = 40.96
     // 50 (Hz) * 32K / 48000 (samp/s) = 34.13(3)
-    int binsize = 32768;
+    int binsize = DEFAULT_BINSIZE;
     /// Frequency target.
-    int target  = 60;
+    int target  = DEFAULT_TARGET;
     /// Target sample rate
-    int rate    = 48000;
+    int rate    = DEFAULT_SAMPRATE;
     /// PCM device to listen to.
     string device;
     
@@ -254,25 +262,32 @@ template DSTRVER(uint ver)
         cast(char)(((ver % 100) / 10) + '0') ~
         cast(char)((ver % 10) + '0');
 }
-void print_version()
+void CLI_version()
 {
     import core.stdc.stdlib : exit;
-    writeln("Compiled: ", __TIMESTAMP__);
-    writeln("Compiler: ", __VENDOR__, " ", DSTRVER!__VERSION__);
+    writeln("Compiled  : ", __TIMESTAMP__);
+    writeln("Compiler  : ", __VENDOR__, " ", DSTRVER!__VERSION__);
+    debug enum DEBUG = true;
+    else  enum DEBUG = false;
+    writeln("Debug     : ", DEBUG);
     exit(0);
 }
+
+immutable string MSG_binsize = format("Set bin size (default=%d)", DEFAULT_BINSIZE);
+immutable string MSG_target  = format("Target frequency in Hertz (default=%d)", DEFAULT_TARGET);
+immutable string MSG_rate    = format("Target sample rate for recording (default=%d)", DEFAULT_SAMPRATE);
 
 int main(string[] args)
 {
     CLIOptions cliopts;
     GetoptResult goptres = void;
     try goptres = getopt(args, config.caseSensitive,
-        "binsize",   "Set bin size (default=32768)", &cliopts.binsize,
-        "target",    "Target frequency in Hertz (default=60)", &cliopts.target,
-        "rate",      "Target sample rate for recording (default=48000)", &cliopts.rate,
+        "binsize",   MSG_binsize, &cliopts.binsize,
+        "target",    MSG_target, &cliopts.target,
+        "rate",      MSG_rate, &cliopts.rate,
         "device",    "Device to listen from (required for 'listen')", &cliopts.device,
         "V|verbose", "Be verbose", &cliopts.verbose,
-        "version",   "Show version and quit", &print_version);
+        "version",   "Show version and quit", &CLI_version);
     catch (Exception ex)
     {
         stderr.writeln("error: ", ex.msg);
@@ -282,21 +297,25 @@ int main(string[] args)
     if (goptres.helpWanted || args.length <= 1) // only program name
     {
     Lhelp:
-        defaultGetoptPrinter("Hum checker\n\nOptions:", goptres.options);
-        writeln("\nCommands:");
-        writeln("  list ............ List input PCM devices");
-        writeln("  list-all ........ List all audio devices");
-        writeln("  listen .......... Listen to audio interface (using --device=)");
-        writeln("  analyze FILE .... Analyze a sound file");
-        writeln("  dump FILE ....... Dump stats of FILE, a sound file");
-        writeln("  info FILE ....... Dump information about FILE, a sound file");
-        writeln("  test-bench ...... Benchmark functions");
-        writeln("  test-write ...... Test the WAV file writer");
-        writeln("  help ............ This help page");
-        writeln("\nExamples:");
-        writeln();
-        writeln("  Listen to an interface:");
-        writeln("    powerwatch listen --device=plughw:CARD=Generic,DEV=0");
+        defaultGetoptPrinter(
+            "Hum checker\n"~
+            "  Usage: powerwatch ACTION [OPTIONS...] [FILE]\n"~
+            "\n"~
+            "ACTIONS\n"~
+            "  list ............ List input PCM devices (for --device=)\n"~
+            "  list-all ........ List all audio devices\n"~
+            "  listen .......... Listen to audio interface (using --device=)\n"~
+            "  analyze FILE .... Analyze a sound file for cutoffs\n"~
+            "  dump FILE ....... Dump magnitude data for a sound file\n"~
+            "  info FILE ....... Dump information about a sound file\n"~
+            "  test-bench ...... Benchmark functions\n"~
+            "  test-write ...... Test the WAV file writer\n"~
+            "  help ............ This help page, same as --help\n"~
+            "  version ......... Version page, same as --version\n"~
+            "\nOPTIONS", goptres.options);
+        writeln("\nEXAMPLES");
+        writeln("  Listen to an interface with messages:");
+        writeln("    powerwatch listen --device=plughw:CARD=Generic,DEV=0 --verbose");
         return 0;
     }
     
@@ -384,31 +403,47 @@ int main(string[] args)
         
         short[] samples = wav.getData16bit();
         
-        enum CUTOFF = 20000.0f; // cheap
-        
         //
         // Cutoff checking
         //
+        scope FreqAnalyzer analyzer = new FreqAnalyzer(cliopts.binsize);
         bool warning_cutoff = false;
-        Result result = analyzefft(samples, rate, cliopts.binsize, cliopts.target);
-        foreach (frame; result.frames)
+        float timerate = cast(float)cliopts.binsize/rate; // time rate
+        float time = timerate / 2;
+        float threshold = 0.0;
+        foreach (s; samples.chunks(cliopts.binsize))
         {
+            if (s.length != cliopts.binsize)
+                break;
+            
+            ResultFrame frame = analyzer.fft(s, rate, cliopts.target);
+            
+            // Take first result as threshold
+            if (threshold == 0.0)
+            {
+                threshold = frame.magnitude / 4;
+                // Even if this is still zero, it'll retry next iteration
+                // If there are no results, then maybe the signal is too weak
+            }
+            
             if (warning_cutoff == false)
             {
-                if (frame.magnitude < CUTOFF)
+                if (frame.magnitude < threshold)
                 {
-                    stderr.writefln("~%7.3f: DOWN", (frame.t0 + frame.t1) / 2);
+                    stderr.writefln("~%7.3f: DOWN", time);
                     warning_cutoff = true;
                 }
             }
             else
             {
-                if (frame.magnitude >= CUTOFF)
+                if (frame.magnitude >= threshold)
                 {
-                    stderr.writefln("~%7.3f: UP", (frame.t0 + frame.t1) / 2);
+                    stderr.writefln("~%7.3f: UP", time);
                     warning_cutoff = false;
                 }
             }
+            
+            time += timerate;
         }
         
         //
@@ -446,10 +481,19 @@ int main(string[] args)
         int rate = wav.sampleRate();
         short[] samples = wav.getData16bit();
         
-        Result result = analyzefft(samples, rate, cliopts.binsize, cliopts.target);
-        foreach (frame; result.frames)
+        scope FreqAnalyzer analyzer = new FreqAnalyzer(cliopts.binsize);
+        float timerate = cast(float)cliopts.binsize/rate; // time rate
+        float time = 0.0;
+        foreach (s; samples.chunks(cliopts.binsize))
+        {
+            if (s.length != cliopts.binsize)
+                break;
+            ResultFrame frame = analyzer.fft(s, rate, cliopts.target);
+            float t2 = time+timerate;
             with (frame)
-            writefln(" %5d Hz: T=%8.3f-%8.3f, Mg=%10.0f, Ph=%9f", cliopts.target, t0, t1, magnitude, phase);
+            writefln(" %5d Hz: T=%8.3f-%8.3f, Mg=%10.0f, Ph=%9f", cliopts.target, time, t2, magnitude, phase);
+            time = t2;
+        }
         break;
     case "info": // file info
         if (args.length < 2)
@@ -482,16 +526,29 @@ int main(string[] args)
         short[] samples = new short[RATE * SECS]; // S16 PCM
         for (size_t i; i < samples.length; i++)
             samples[i] = cast(short)(short.max * sin(2 * PI * TARGET * i / RATE));
+        writefln("SETTINGS: RATE=%d SECS=%d", RATE, SECS);
+        
+        scope FreqAnalyzer analyzer = new FreqAnalyzer(cliopts.binsize);
         
         StopWatch sw;
         sw.start();
-        Result fft = analyzefft(samples, RATE, cliopts.binsize, cliopts.target);
+        foreach (s; samples.chunks(cliopts.binsize))
+        {
+            if (s.length != cliopts.binsize)
+                break;
+            analyzer.fft(s, RATE, TARGET, false);
+        }
         sw.stop();
         Duration fftdur = sw.peek();
         
         sw.reset();
         sw.start();
-        Result dft = analyzedft(samples, RATE, cliopts.binsize, cliopts.target);
+        foreach (s; samples.chunks(cliopts.binsize))
+        {
+            if (s.length != cliopts.binsize)
+                break;
+            analyzer.dft(s, RATE, TARGET, false);
+        }
         sw.stop();
         Duration dftdur = sw.peek();
         
@@ -499,24 +556,6 @@ int main(string[] args)
         ReducedDur rddft = reduceDuration(dftdur);
         writefln("FFT: %3d %s", rdfft.t, rdfft.unit);
         writefln("DFT: %3d %s", rddft.t, rddft.unit);
-        
-        //CostasLoop clfft = CostasLoop(40, 80);
-        float ffthigh = 0.0, fftlow = 0.0;
-        foreach (ref frame; fft.frames)
-        {
-            if (frame.magnitude > ffthigh) ffthigh = frame.magnitude;
-            if (frame.magnitude < fftlow)  fftlow  = frame.magnitude;
-        }
-        //CostasLoop cldft = CostasLoop(40, 80);
-        float dfthigh = 0.0, dftlow = 0.0;
-        foreach (ref frame; dft.frames)
-        {
-            if (frame.magnitude > dfthigh) dfthigh = frame.magnitude;
-            if (frame.magnitude < dftlow)  dftlow  = frame.magnitude;
-        }
-        writefln("FFT high= %f  low = %f ", ffthigh, fftlow);
-        writefln("DFT high= %f  low = %f ", dfthigh, dftlow);
-        
         break;
     case "test-write":
         // Better to generate the same wave for both
@@ -528,7 +567,8 @@ int main(string[] args)
         {
             samples[i] = cast(short)((short.max / 2) * sin(2 * PI * i * TARGET / RATE));
         }
-        dumpbuffer("test-write.wav", samples, RATE, SECS, 5, RATE);
+        
+        dumpbuffer("test-write.wav", samples, RATE, SECS, 0, RATE); // or have "test-dump" for this
         /*
         scope WavWriter writer = new WavWriter("test-write.wav");
         writer.setinfo(WavFormat.pcm, 1, RATE, samples.length);
@@ -536,6 +576,7 @@ int main(string[] args)
         */
         break;
     case "help": goto Lhelp;
+    case "version": CLI_version(); break;
     default:
         stderr.writeln("error: Unknown action: \"", action, "\"");
         return 1;
