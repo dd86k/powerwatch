@@ -90,6 +90,7 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
         scope Asound alsa = new Asound();
     
         // TODO: channel autodetection
+        // TODO: Select 32-bit IEEE floats over S16
         
         // HACK: Make it easier to perform FFT since class Fft only takes base-2 lengths
         config.period_size = binsize;
@@ -114,11 +115,18 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
         float threshold = 0.0;
         
         if (verbose)
+        {
             stderr.writeln("Listening through ", device, "...");
+            stderr.writeln("Ta = ", targetfreq);
+            stderr.writeln("Bs = ", binsize);
+            stderr.writeln("Sr = ", config.sample_rate);
+            stderr.writefln("Re = %f", freqresolution(binsize, config.sample_rate));
+        }
         StopWatch sw;
         sw.start();
         alsa.listen(device, config, buffer.ptr, (short[] samples, ref int status) {
-            Duration d0 = sw.peek();
+            
+            // TODO: Copy buffer anew for analysis to avoid modifying backbuffer
             
             // copy period to back buffer
             import core.stdc.string : memcpy;
@@ -138,10 +146,9 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
                 cl.update(samp, config.sample_rate);
             */
             
-            // Analyze
-            ResultFrame frame = analyzer.analyze(samples, config.sample_rate, targetfreq);
-            
-            // Get most important time and unit for simpler formatting
+            // FFT
+            Duration d0 = sw.peek();
+            ResultFrame frame = analyzer.fft(samples, config.sample_rate, targetfreq);
             Duration d1 = sw.peek();
             ReducedDur rd = reduceDuration(d1 - d0);
             
@@ -162,16 +169,10 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
             });
             
             // print info
-            /*
-            stderr.writefln("PT = %3d %s, M(%d) = %10.1f, FE(WIP) = %.3f Hz",
-                rd.t, rd.unit,
-                targetfreq, frame.magnitude,
-                cl.frequency);
-            */
             if (verbose)
-                stderr.writefln("PT = %3d %s, M(%d) = %10.1f",
+                stderr.writefln("PT = %3d %s, M = %10.1f, P = %10.1f",
                     rd.t, rd.unit,
-                    targetfreq, frame.magnitude);
+                    frame.magnitude, frame.phase);
             
             // Threshold needs to be set after some time.
             // ALSA software interface (plughw:) might normalize things (better that than
@@ -179,7 +180,7 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
             if (threshold == 0.0 && d1 >= dur!"seconds"(5))
             {
                 // Make sure we have something and not just zero.
-                float t = frame.magnitude / 2;
+                float t = frame.magnitude / 4;
                 if (t > 0.0)
                 {
                     threshold = t;

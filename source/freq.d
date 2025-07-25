@@ -1,9 +1,10 @@
 module freq;
 
-import std.complex : Complex;
 import core.math : sqrt;
+import std.complex : Complex;
 import std.math.constants : PI;
 import std.math.trigonometry : cos, sin, atan2;
+import std.numeric : Fft, fft;
 
 // 50 or 60 ±0.5 Hz
 
@@ -153,7 +154,31 @@ Result analyzefft(short[] samples, int rate, size_t binsize = 16384, int target 
     return results;
 }
 
-import std.numeric : Fft, fft;
+// NOTE: Mnemonic to get a clearer picture of operations
+
+// Get frequency given fft/sound parameters.
+// e.g., because 44100 samples/s / 64K = ~0.672912598 (frequency resolution for each bin)
+float freqresolution(size_t binsize, int samplerate)
+{
+    return cast(float)samplerate / binsize;
+}
+unittest
+{
+    import std.math : isClose;
+    assert(isClose(freqresolution(64 * 1024, 44100), 0.672912598));
+}
+// Get bin to frequency target given its resolution
+size_t fftbin(int target, size_t binsize, int samplerate)
+{
+    import std.math : round;
+    return cast(size_t)(round(cast(float)target * binsize / samplerate));
+}
+unittest
+{
+    import std.math : isClose;
+    assert(fftbin(1209, 4 * 1024, 44100) == 112); // 112.3
+}
+
 /*
 The frequencies are all relative to the FFT window.
 res[0] is 0 Hz, res[1] corresponds to a sine wave that fits 1 cycle inside your window,
@@ -184,21 +209,25 @@ class FreqAnalyzer
         return 0.42 - 0.5 * cos(2 * PI * n / (N - 1)) + 0.08 * cos(4 * PI * n / (N - 1));
     }
     
-    ResultFrame analyze(short[] samples, int rate, int target = 60)
+    ResultFrame fft(short[] samples, int rate, int target = 60, bool apply_window = true)
     {
         // Apply Blackman window
-        int N = cast(int)samples.length;
-        for (int i; i < N; i++)
+        if (apply_window)
         {
-            float f = cast(float)samples[i] / 32767;
-            samples[i] = cast(short)(f * blackman_window!float(i, N) * 32767);
+            int N = cast(int)samples.length;
+            for (int i; i < N; i++)
+            {
+                float f = cast(float)samples[i] / 32767;
+                samples[i] = cast(short)(f * blackman_window!float(i, N) * 32767);
+            }
         }
         
         // Get bin
-        size_t binidx = target * binsize / rate;
+        //size_t binidx = target * binsize / rate;
+        size_t binidx = fftbin(target, binsize, rate);
         Complex!float[] bins = o.fft!float(samples); // base-2 sizes only
-        if (binidx >= bins.length)
-            throw new Exception("Frequency out of range");
+        if (binidx >= bins.length / 2)
+            throw new Exception("Target out of Nyquist frequency");
         Complex!float bin = bins[binidx];
         
         return ResultFrame(0, 0, magnitude!float(bin), phase!float(bin));
