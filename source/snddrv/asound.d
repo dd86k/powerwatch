@@ -244,10 +244,11 @@ class Asound
         scope(exit) snd_pcm_close(handle);
         
         snd_pcm_hw_params_t *hw_params;
-        snd_pcm_hw_params_malloc(&hw_params);
-        if (snd_pcm_hw_params_any(handle, hw_params) < 0)
-            throw new Exception("Failed to retrieve HW params");
+        if ((error = snd_pcm_hw_params_malloc(&hw_params)) < 0)
+            throw new AsoundException(error, "Failed to allocate HW params");
         scope(exit) snd_pcm_hw_params_free(hw_params);
+        if ((error = snd_pcm_hw_params_any(handle, hw_params)) < 0)
+            throw new AsoundException(error, "Failed to retrieve HW params");
         
         uint chans;
         if ((error = snd_pcm_hw_params_get_channels(hw_params, &chans)) < 0)
@@ -354,34 +355,41 @@ class Asound
         snd_pcm_t *handle;
         int error = snd_pcm_open(&handle, toStringz( device ), SND_PCM_STREAM_CAPTURE, 0);
         if (error < 0)
-            throw new AsoundException(error);
+            throw new AsoundException(error, "Failed to open device");
         scope(exit) snd_pcm_close(handle);
         
         // Setup sw
-        // TODO: Is it really required? Maybe for plughw:, but hw:?
+        /*
         snd_pcm_sw_params_t *sw_params;
-        snd_pcm_sw_params_malloc(&sw_params);
-        snd_pcm_sw_params_current(handle, sw_params);
+        if ((error = snd_pcm_sw_params_malloc(&sw_params)) < 0)
+            throw new AsoundException(error, "Could not allocate SW params");
+        scope(exit) snd_pcm_sw_params_free(sw_params);
+        if ((error = snd_pcm_sw_params_current(handle, sw_params)) < 0)
+            throw new AsoundException(error, "Failed to retrieve SW params");
+        */
         
         // Setup hw
         snd_pcm_hw_params_t *hw_params;
-        //snd_pcm_hw_params_alloca(&hw_params);
-        snd_pcm_hw_params_malloc(&hw_params);
+        if ((error = snd_pcm_hw_params_malloc(&hw_params)) < 0)
+            throw new AsoundException(error, "Could not allocate HW params");
+        scope(exit) snd_pcm_hw_params_free(hw_params);
         if (snd_pcm_hw_params_any(handle, hw_params) < 0)
             throw new Exception("Failed to retrieve HW params");
-        scope(exit) snd_pcm_hw_params_free(hw_params);
         
         // Setup ALSA internal parameters
-        uint sample_rate = config.sample_rate; // samples/s
-        snd_pcm_uframes_t period_size = config.period_size; // ulong: get notified every N frames
         if ((error = snd_pcm_hw_params_set_access(handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0)
             throw new AsoundException(error, "Can't set PCM acces to interleaved mode");
         if ((error = snd_pcm_hw_params_set_format(handle, hw_params, SND_PCM_FORMAT_S16_LE)) < 0)
             throw new AsoundException(error, "Can't set PCM format to S16 LE");
-        if ((error = snd_pcm_hw_params_set_channels(handle, hw_params, config.channels)) < 0)
-            throw new AsoundException(error, "Can't set PCM channel number");
+        if (config.channels != 0 && // avoid setting when channel count left unspecified
+            (error = snd_pcm_hw_params_set_channels(handle, hw_params, config.channels)) < 0)
+            throw new AsoundException(error, "Can't set PCM channel count");
+        if ((error = snd_pcm_hw_params_get_channels(hw_params, &config.channels)) < 0)
+            throw new AsoundException(error, "Can't get PCM channel count");
+        uint sample_rate = config.sample_rate; // samples/s
         if ((error = snd_pcm_hw_params_set_rate_near(handle, hw_params, &sample_rate, null)) < 0)
             throw new AsoundException(error, "Can't set number rate");
+        snd_pcm_uframes_t period_size = config.period_size; // ulong: get notified every N frames
         if ((error = snd_pcm_hw_params_set_period_size_near(handle, hw_params, &period_size, null)) < 0)
             throw new AsoundException(error, "Can't set period size");
 
@@ -395,8 +403,8 @@ class Asound
             snd_pcm_sframes_t readn = snd_pcm_readi(handle, buffer, period_size);
             if (readn < 0)
             {
-                /* Recover the ALSA internal state if an error occurse */
-                enum SND_ERR_SILENCE = 0;
+                // Recover the ALSA internal state if an error occurs
+                enum SND_ERR_SILENCE = 0; // do not print
                 error = cast(int)readn;
                 int recover = snd_pcm_recover(handle, error, SND_ERR_SILENCE);
                 if (recover < 0)
