@@ -5,6 +5,10 @@ import std.complex : Complex;
 import std.math.constants : PI;
 import std.math.trigonometry : cos, sin, atan2;
 import std.numeric : Fft, fft;
+import std.traits : isFloatingPoint;
+
+enum PI2 = PI * 2;
+enum PI4 = PI * 4;
 
 // 50 or 60 ±0.5 Hz
 
@@ -52,7 +56,7 @@ est_freq = (1 - frac) * sub_freqs[lower_idx] + frac * sub_freqs[upper_idx]
 /// Calculate the magnitude of a given bin.
 /// Params: bin = Selected bin.
 /// Returns: Magnitude
-F magnitude(F = double)(Complex!F bin)
+F magnitude(F = float)(Complex!F bin)
 {
     return sqrt(bin.re * bin.re + bin.im * bin.im);
 }
@@ -65,27 +69,7 @@ F phase(F = float)(Complex!F bin)
     return atan2(bin.im, bin.re); // arctangent
 }
 
-// Compute the DFT for the specific frequency bin k
-Complex!F dftfreq(F = double, R)(R range, int rate, int target)
-{
-    enum PI2 = PI * 2;
-    
-    int N = cast(int)range.length;
-    int k = cast(int)(cast(F)target / rate * N); // Calculate the bin index for frequency f0
-    Complex!F c = void;
-    c.re = 0.0;
-    c.im = 0.0;
-
-    for (int n = 0; n < N; n++)
-    {
-        F angle = PI2 * k * n / N;
-        c.re += range[n] * cos(angle);
-        c.im -= range[n] * sin(angle);
-    }
-    
-    return c;
-}
-
+// TODO: Deprecate ResultFrame/Result
 struct ResultFrame
 {
     float magnitude;
@@ -126,10 +110,10 @@ unittest
 ///   v = Float value between -1.0 to 1.0.
 ///   n = Index.
 ///   N = Total amount of samples.
-/// Returns: New 
-F blackman_window(F = double)(F v, int n, int N)
+/// Returns: New sample value.
+F blackman_window(F = float)(F v, ptrdiff_t n, ptrdiff_t N)
 {
-    return v * (0.42 - 0.5 * cos(2 * PI * n / (N - 1)) + 0.08 * cos(4 * PI * n / (N - 1)));
+    return v * (0.42 - 0.5 * cos(PI2 * n / (N - 1)) + 0.08 * cos(PI4 * n / (N - 1)));
 }
 
 /*
@@ -195,9 +179,65 @@ class FreqAnalyzer
             }
         }
         
-        Complex!float bin = dftfreq!float(samples, rate, target);
+        int N = cast(int)samples.length;
+        int k = cast(int)(cast(float)target / rate * N); // Calculate the bin index for frequency f0
+        Complex!float c = Complex!float(0.0, 0.0);
         
-        return ResultFrame(magnitude!float(bin), phase!float(bin));
+        for (size_t n = 0; n < N; n++)
+        {
+            float angle = PI2 * k * n / N;
+            float f = samples[n] / 32767;
+            c.re += f * cos(angle);
+            c.im -= f * sin(angle);
+        }
+        
+        return ResultFrame(magnitude!float(c), phase!float(c));
+    }
+    
+    /// Perform a Fast Fourier Transform and select bin closest to frequency target.
+    /// Params:
+    ///   samples = Samples (should be exactly binsize).
+    ///   rate = Sampling rate.
+    ///   target = Frequency target.
+    /// Returns: Bucket for target frequency.
+    Complex!F fftfreq(F = float)(F[] samples, int rate, int target)
+        if (isFloatingPoint!F)
+    {
+        if (samples.length != binsize) // due to class Fft
+            return Complex!float();
+        
+        // Get bin
+        size_t binidx = fftbinidx(target, binsize, rate);
+        scope Complex!F[] bins = o.fft!F(samples); // base-2 sizes only
+        if (binidx >= bins.length / 2)
+            throw new Exception("Target out of Nyquist frequency");
+        return bins[binidx];
+    }
+    
+    /// Perform an Descrete Fourier Transform on target frequency.
+    /// Params:
+    ///   samples = Samples (should be exactly binsize).
+    ///   rate = Sampling rate.
+    ///   target = Frequency target.
+    /// Returns: Bucket for target frequency.
+    Complex!F dftfreq(F = float)(F[] samples, int rate, int target)
+        if (isFloatingPoint!F)
+    {
+        if (samples.length != binsize) // Consistency with fftfreq
+            return Complex!float();
+        
+        int N = cast(int)samples.length;
+        int k = cast(int)(cast(F)target / rate * N); // Calculate the bin index for frequency f0
+        Complex!F c = Complex!F(0.0, 0.0);
+        
+        for (size_t n = 0; n < N; n++)
+        {
+            F angle = PI2 * k * n / N;
+            c.re += samples[n] * cos(angle);
+            c.im -= samples[n] * sin(angle);
+        }
+        
+        return c;
     }
     
 private:
