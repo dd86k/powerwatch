@@ -12,14 +12,12 @@ import std.math.constants : PI;
 import std.math.trigonometry : cos, sin, atan2;
 import std.range : chunks;
 import std.stdio;
+import std.string : startsWith;
 import coastas;
 import freq;
 import snddrv.asound;
-import wav;
+import wav; // TODO: move to file/wav.d
 
-// TODO: Interface listening
-//       "Learn" the current peak after 5 seconds, divide by 2, set as new threshold
-//       Warn if clipping occurs (e.g., in S16, if PCM values reach short.min/max)
 // TODO: Loop end
 //       When the size of the samples doesn't fit bin length (foreach chunks),
 //       data should be zero'd instead of just ending the loop.
@@ -57,6 +55,8 @@ struct MsgDone
     
 }
 
+alias Sample = short; // Sampling type (short=S16)
+
 /// Get name of dump when writing
 string dumpname()
 {
@@ -67,17 +67,27 @@ string dumpname()
         time.hour, time.minute, time.second);
 }
 /// Save backbuffer
-void dumpbuffer(string path, short[] buffer,
+void dumpbuffer(string path, Sample[] buffer,
     size_t periodsize, size_t periodcounts, size_t periodidx,
     int sample_rate)
 {
+    static if (is(Sample == short))
+        enum FORMAT = WavFormat.pcm;
+    else static if (is(Sample == float))
+        enum FORMAT = WavFormat.ieee_float;
+    else
+        static assert(0, "format");
     enum CHANNELS = 1;
+    
+    // HACK: Fixes last "slice" being saved first
+    ++periodidx;
+    
     scope WavWriter writer = new WavWriter(path);
-    writer.setinfo(WavFormat.pcm, CHANNELS, sample_rate, buffer.length);
-    for (size_t t, i = periodidx; t < periodcounts; t++, i++)
+    writer.setinfo(FORMAT, CHANNELS, sample_rate, buffer.length);
+    for (size_t t; t < periodcounts; t++, periodidx++)
     {
-        if (i >= periodcounts) i = 0; // round-trip
-        size_t z = i * periodsize;
+        if (periodidx >= periodcounts) periodidx = 0; // round-trip
+        size_t z = periodidx * periodsize;
         writer.write(buffer[z .. z + periodsize]);
     }
 }
@@ -90,81 +100,112 @@ enum State : ubyte { down, up }
 void thread_listen(Tid parent, string device, AsoundConfig config, int targetfreq, int binsize,
     bool verbose)
 {
+    static if (is(Sample == short))
+        enum FORMAT = SND_PCM_FORMAT_S16_LE;
+    else static if (is(Sample == float))
+        enum FORMAT = SND_PCM_FORMAT_FLOAT_LE;
+    else
+        static assert(0, "format");
+    enum AMT = 20;  // number of record "slices" for backbuffer.
+                    // typically, a "slice" is an amount of frames, containing samples.
+                    // 32K * 20 = 655360 samples
+                    // 655360 @ 48000 s/s = ~13.65 secs
+    enum REC0 = AMT / 2;    // record after this many "slices" have passed.
+                            // the event should be around the middle
     try
     {
+        // Setup alsa stuff
         scope Asound alsa = new Asound();
-    
-        // TODO: channel autodetection
-        // TODO: Select 32-bit IEEE floats over S16
+        
+        // Auto detect channels.
+        // If sw (plughw), set channels to one. Otherwise, if hw, autodetect.
+        // channels: Real number of channels from listen interface
+        // config.channels: Only for setting up listen interface
+        bool sw_audio = device.startsWith("plughw:");
+        uint channels;
+        if (sw_audio)
+        {
+            config.channels = channels = 1;
+        }
+        else
+        {
+            channels = alsa.getChannelsForDevice(device);
+            if (channels == 0) // shouldn't happen, but just in case
+            {
+                throw new Exception("ALSA returned zero channels for audio PCM device");
+            }
+            config.channels = 0; // do not change channels in alsa
+        }
+        
+        // Automatically select format depending on compile type
+        config.format = FORMAT;
         
         // HACK: Make it easier to perform FFT since class Fft only takes base-2 lengths
-        config.period_size = binsize;
+        config.period_size = binsize * channels;
         
-        // To reduce manipulation errors, make a structure
-        enum AMT = 40;  // number of record "slices". 32K @ 48000 samp/s * 40 = 6.827 s
-                        // 32K (FFT) * 40 = 1 310 720 samples
-                        // 1310720 samples / 96000 samples/s = ~13.65(3) seconds (~3.66 MiB)
-        short[] backbuffer = new short[config.period_size * AMT]; // S16, already zero'd
-        size_t backi; /// backbuffer "slice" index
-        bool holding; /// If true, we're holding for a recording soon
-        State state = State.up; /// Last known state, assume up
-        enum REC0 = AMT / 2; // record after this many "slices"
-        size_t reci; /// Record/Hold index, up until REC0
+        // TODO: Select 32-bit IEEE floats over S16
         
-        // HACK: Recoding notification matching binsize for easier analysis
+        // Backbuffer setup
+        Sample[] backbuffer = new Sample[config.period_size * AMT]; // already zero'd
+        size_t backi;   /// backbuffer "slice" index
+        size_t reci;    /// Record/Hold index, up until REC0
+        bool holding;   /// If true, we're holding for a recording soon
+        
+        // Setup analyser bits
         scope FreqAnalyzer analyzer = new FreqAnalyzer(binsize);
-        
-        //CostasLoop cl = CostasLoop(targetfreq - .5, targetfreq + .5);
-        short[] buffer =  new short[config.period_size]; // for alsa
         float threshold = 0.0;
+        State state = State.up; /// Last known state, assume up
         
+        // Print info
         if (verbose)
         {
             stderr.writeln("Listening through ", device, "...");
+            stderr.writeln("Ch = ", channels);
+            stderr.writeln("Fm = ", FORMAT == SND_PCM_FORMAT_S16_LE ? "S16_LE" : "IEEE_F32");
             stderr.writeln("Ta = ", targetfreq);
             stderr.writeln("Bs = ", binsize);
             stderr.writeln("Sr = ", config.sample_rate);
             stderr.writefln("Re = %f", freqresolution(binsize, config.sample_rate));
         }
+        
+        size_t   aframes = channels * config.period_size;
+        Sample[] abuffer = new Sample[aframes]; // ALSA immediate buffer, all channels
+        
         StopWatch sw;
         sw.start();
-        alsa.listen(device, config, buffer.ptr, (short[] samples, ref int status) {
-            
-            // TODO: Copy buffer anew for analysis to avoid modifying backbuffer
-            
-            // copy period to back buffer
-            import core.stdc.string : memcpy;
+        alsa.listen(device, config, abuffer.ptr, (void *buffer, size_t nframes, ref int astatus) {
+            // Copy period time to back buffer
+            import core.stdc.string : memcpy, memset;
             if (backi >= AMT) backi = 0; // round-trip
-            memcpy(
+            // Only same samples from the first channel
+            if (channels > 1)
+            {
+                Sample *p = cast(Sample*)buffer;
+                for (size_t i; i < nframes; i++)
+                    p[i] = p[i * channels];
+            }
+            short[] samples = (cast(Sample*)buffer)[0..nframes];
+            
+            // Copy immediate buffer into back buffer (assuming mono-channel)
+            memcpy( // Copy one "slice"
                 // To slice of buffer
                 backbuffer.ptr + (backi * config.period_size),
                 // From samples we got
-                samples.ptr,
-                // one second worth to match period size
-                config.period_size * ushort.sizeof
+                buffer,
+                // Copy period size (slice) worth
+                nframes * Sample.sizeof
             );
-            
-            // estimate frequency (wip)
-            /*
-            foreach (short samp; samples)
-                cl.update(samp, config.sample_rate);
-            */
-            
-            // FFT
-            Duration d0 = sw.peek();
-            ResultFrame frame = analyzer.fft(samples, config.sample_rate, targetfreq);
-            Duration d1 = sw.peek();
-            ReducedDur rd = reduceDuration(d1 - d0);
             
             // Get status from parent thread
             // This is a suboptimal way to do polling
             // TODO: Fuse MsgQuit/MsgSave together to reduce on "polling" overhead
-            if (receiveTimeout(dur!"msecs"(1), (MsgQuit mq) {}))
+            static immutable Duration polldur = dur!"msecs"(1);
+            if (receiveTimeout(polldur, (MsgQuit mq) {}))
             {
-                status = 0;
+                astatus = 0;
                 return;
             }
-            receiveTimeout(dur!"msecs"(1), (MsgSave ms) {
+            receiveTimeout(polldur, (MsgSave ms) {
                 string name = dumpname();
                 dumpbuffer(name, backbuffer, config.period_size, AMT, backi, config.sample_rate);
                 if (verbose)
@@ -172,11 +213,18 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
                 send(parent, MsgDone());
             });
             
+            // FFT, this may modify the immediate buffer
+            Duration d0 = sw.peek();
+            ResultFrame frame = analyzer.fft(samples, config.sample_rate, targetfreq);
+            Duration d1 = sw.peek();
+            ReducedDur rd = reduceDuration(d1 - d0);
+            
             // print info
             if (verbose)
-                stderr.writefln("PT = %3d %s, M = %10.1f, P = %10.1f",
-                    rd.t, rd.unit,
-                    frame.magnitude, frame.phase);
+            {
+                stderr.writefln("PT = %3d %s, M = %10.1f",
+                    rd.t, rd.unit, frame.magnitude);
+            }
             
             // Threshold needs to be set after some time.
             // ALSA software interface (plughw:) might normalize things (better that than
@@ -193,29 +241,38 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
                 }
             }
             
-            State newstate = frame.magnitude < threshold ? State.down : State.up;
-            
-            // It'd be pointless to dump the buffer when the threshold isn't set or
-            // when we're already waiting to capture enough data for a dump.
-            //
-            // So only initiate a recording if (1) a threshold is set, (2) there isn't
-            // a recording being held, and (3) the state changed (e.g., up to down).
-            if (threshold != 0.0 && holding == false && state != newstate)
-            {
-                holding = true;
-                reci = 0;
-                state = newstate;
-            }
-            
-            // Holding a recording until "record index"
+            // Holding a recording until "record index".
+            // When the index hits it, dump the backbuffer.
             if (holding == true && ++reci == REC0)
             {
                 string name = dumpname();
                 dumpbuffer(name, backbuffer, config.period_size, AMT, backi, config.sample_rate);
                 stderr.writeln("Du = ", name);
                 
-                // reset record index
+                // reset record status, allowing the checks for new states again
                 holding = false;
+            }
+            
+            // If we're NOT holding for a recording, it's okay to update state.
+            if (holding == false)
+            {
+                // If the magnitude of the analyzed frequency is lower than our
+                // threshold, then changing the status means that something happened.
+                State newstate = frame.magnitude < threshold ? State.down : State.up;
+                
+                // It'd be pointless to dump the buffer when the threshold isn't set or
+                // when we're already waiting to capture enough data for a dump.
+                //
+                // So only initiate a recording if (1) a threshold is set, (2) there isn't
+                // a recording being held, and (3) the state changed (e.g., up to down).
+                if (threshold != 0.0 && holding == false && state != newstate)
+                {
+                    holding = true;
+                    reci = 0;
+                    state = newstate;
+                    if (verbose)
+                        writeln("St = ", state);
+                }
             }
             
             backi++;
@@ -233,8 +290,8 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
 // CLI
 //
 
-enum DEFAULT_BINSIZE  = 32 * 1024;
 enum DEFAULT_TARGET   = 60;
+enum DEFAULT_BINSIZE  = 32 * 1024;
 enum DEFAULT_SAMPRATE = 48000;
 
 struct CLIOptions

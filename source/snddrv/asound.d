@@ -341,7 +341,7 @@ class Asound
     }
     
     void listen(string device, AsoundConfig config, void *buffer,
-        void delegate(short[] samples, ref int status) cb)
+        void delegate(void *buffer, size_t nframes, ref int status) cb)
     {
         if (device is null)
             throw new Exception("Device was not provided");
@@ -384,8 +384,11 @@ class Asound
         if (config.channels != 0 && // avoid setting when channel count left unspecified
             (error = snd_pcm_hw_params_set_channels(handle, hw_params, config.channels)) < 0)
             throw new AsoundException(error, "Can't set PCM channel count");
-        if ((error = snd_pcm_hw_params_get_channels(hw_params, &config.channels)) < 0)
+        /*
+        uint channels;
+        if ((error = snd_pcm_hw_params_get_channels(hw_params, &channels)) < 0)
             throw new AsoundException(error, "Can't get PCM channel count");
+        */
         uint sample_rate = config.sample_rate; // samples/s
         if ((error = snd_pcm_hw_params_set_rate_near(handle, hw_params, &sample_rate, null)) < 0)
             throw new AsoundException(error, "Can't set number rate");
@@ -410,8 +413,10 @@ class Asound
                 if (recover < 0)
                     throw new AsoundException(error, "Failed to recover state");
             }
-            short[] samples = (cast(short*)buffer)[0..readn];
-            cb(samples, status);
+            if (readn == 0)
+                continue;
+            //short[] samples = (cast(short*)buffer)[0..readn * channels];
+            cb(buffer, cast(size_t)readn, status);
         }
     }
 }
