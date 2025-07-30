@@ -22,11 +22,17 @@ enum SND_PCM_ACCESS_RW_NONINTERLEAVED   = _snd_pcm_access.SND_PCM_ACCESS_RW_NONI
 enum SND_PCM_FORMAT_S8          = _snd_pcm_format.SND_PCM_FORMAT_S8;
 enum SND_PCM_FORMAT_U8          = _snd_pcm_format.SND_PCM_FORMAT_U8;
 enum SND_PCM_FORMAT_U16_LE      = _snd_pcm_format.SND_PCM_FORMAT_U16_LE;
+enum SND_PCM_FORMAT_U16_BE      = _snd_pcm_format.SND_PCM_FORMAT_U16_BE;
 enum SND_PCM_FORMAT_S16_LE      = _snd_pcm_format.SND_PCM_FORMAT_S16_LE;
+enum SND_PCM_FORMAT_S16_BE      = _snd_pcm_format.SND_PCM_FORMAT_S16_BE;
 enum SND_PCM_FORMAT_U24_LE      = _snd_pcm_format.SND_PCM_FORMAT_U24_LE;
+enum SND_PCM_FORMAT_U24_BE      = _snd_pcm_format.SND_PCM_FORMAT_U24_BE;
 enum SND_PCM_FORMAT_S24_LE      = _snd_pcm_format.SND_PCM_FORMAT_S24_LE;
+enum SND_PCM_FORMAT_S24_BE      = _snd_pcm_format.SND_PCM_FORMAT_S24_BE;
 enum SND_PCM_FORMAT_U32_LE      = _snd_pcm_format.SND_PCM_FORMAT_U32_LE;
+enum SND_PCM_FORMAT_U32_BE      = _snd_pcm_format.SND_PCM_FORMAT_U32_BE;
 enum SND_PCM_FORMAT_S32_LE      = _snd_pcm_format.SND_PCM_FORMAT_S32_LE;
+enum SND_PCM_FORMAT_S32_BE      = _snd_pcm_format.SND_PCM_FORMAT_S32_BE;
 enum SND_PCM_FORMAT_FLOAT_LE    = _snd_pcm_format.SND_PCM_FORMAT_FLOAT_LE;
 enum SND_PCM_FORMAT_FLOAT_BE    = _snd_pcm_format.SND_PCM_FORMAT_FLOAT_BE;
 enum SND_PCM_FORMAT_FLOAT64_LE  = _snd_pcm_format.SND_PCM_FORMAT_FLOAT64_LE;
@@ -89,6 +95,12 @@ struct AsoundConfig
 // 
 class Asound
 {
+    this()
+    {
+        snd_lib_error_set_handler(null);
+        snd_lib_error_set_local(null);
+    }
+    
     AsoundPCMDev[] listPCMDevices(int stream = SND_PCM_STREAM_CAPTURE)
     {
         import core.stdc.string : strcmp;
@@ -228,6 +240,29 @@ class Asound
         }
         
         return devices;
+    }
+    
+    bool samplingFormatAvailableForDevice(string device, int fmt, int stream = SND_PCM_STREAM_CAPTURE)
+    {
+        if (device is null)
+            throw new Exception("Device was not provided");
+        
+        // Open the sound device in capture mode
+        // Default is "default"
+        snd_pcm_t *handle;
+        int error = snd_pcm_open(&handle, toStringz( device ), cast(_snd_pcm_stream)stream, 0);
+        if (error < 0)
+            throw new AsoundException(error);
+        scope(exit) snd_pcm_close(handle);
+        
+        snd_pcm_hw_params_t *hw_params;
+        if ((error = snd_pcm_hw_params_malloc(&hw_params)) < 0)
+            throw new AsoundException(error, "Failed to allocate HW params");
+        scope(exit) snd_pcm_hw_params_free(hw_params);
+        if ((error = snd_pcm_hw_params_any(handle, hw_params)) < 0)
+            throw new AsoundException(error, "Failed to retrieve HW params");
+        
+        return snd_pcm_hw_params_test_format(handle, hw_params, cast(_snd_pcm_format)fmt) >= 0;
     }
     
     uint getChannelsForDevice(string device, int stream = SND_PCM_STREAM_CAPTURE)
@@ -379,8 +414,8 @@ class Asound
         // Setup ALSA internal parameters
         if ((error = snd_pcm_hw_params_set_access(handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0)
             throw new AsoundException(error, "Can't set PCM acces to interleaved mode");
-        if ((error = snd_pcm_hw_params_set_format(handle, hw_params, SND_PCM_FORMAT_S16_LE)) < 0)
-            throw new AsoundException(error, "Can't set PCM format to S16 LE");
+        if ((error = snd_pcm_hw_params_set_format(handle, hw_params, cast(_snd_pcm_format)config.format)) < 0)
+            throw new AsoundException(error, "Can't set PCM format");
         if (config.channels != 0 && // avoid setting when channel count left unspecified
             (error = snd_pcm_hw_params_set_channels(handle, hw_params, config.channels)) < 0)
             throw new AsoundException(error, "Can't set PCM channel count");

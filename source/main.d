@@ -384,8 +384,32 @@ int main(string[] args)
     
     switch (action) {
     case "list": // list input-capable devices
+        struct AFormat
+        {
+            int format;
+            string name;
+        }
+        static immutable AFormat[] AFORMATS = [
+            { SND_PCM_FORMAT_S16_LE, "S16_LE" },
+            { SND_PCM_FORMAT_S16_BE, "S16_BE" },
+            { SND_PCM_FORMAT_U16_LE, "U16_LE" },
+            { SND_PCM_FORMAT_U16_BE, "U16_BE" },
+            { SND_PCM_FORMAT_S24_LE, "S24_LE" },
+            { SND_PCM_FORMAT_S24_BE, "S24_BE" },
+            { SND_PCM_FORMAT_U24_LE, "U24_LE" },
+            { SND_PCM_FORMAT_U24_BE, "U24_BE" },
+            { SND_PCM_FORMAT_S32_LE, "S32_LE" },
+            { SND_PCM_FORMAT_S32_BE, "S32_BE" },
+            { SND_PCM_FORMAT_U32_LE, "U32_LE" },
+            { SND_PCM_FORMAT_U32_BE, "U32_BE" },
+            { SND_PCM_FORMAT_FLOAT_LE, "FLOAT_LE" },
+            { SND_PCM_FORMAT_FLOAT_BE, "FLOAT_BE" },
+            { SND_PCM_FORMAT_FLOAT64_LE, "FLOAT64_LE" },
+            { SND_PCM_FORMAT_FLOAT64_BE, "FLOAT64_BE" },
+        ];
         writeln("Input devices (ALSA):");
-        foreach (ref dev; new Asound().listPCMDevices())
+        scope Asound alsa = new Asound();
+        foreach (dev; alsa.listPCMDevices())
         {
             writeln(dev.name);
             
@@ -393,6 +417,21 @@ int main(string[] args)
             {
                 writeln("    ", desc);
             }
+            // Test formats
+            write("    Formats: ");
+            try foreach (i, fmt; AFORMATS)
+            {
+                if (alsa.samplingFormatAvailableForDevice(dev.name, fmt.format))
+                {
+                    if (i) write(", ");
+                    write(fmt.name);
+                }
+            }
+            catch (Exception ex)
+            {
+                
+            }
+            writeln();
         }
         break;
     case "list-all": // list all sound interfaces
