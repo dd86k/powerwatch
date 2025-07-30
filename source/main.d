@@ -371,7 +371,7 @@ int main(string[] args)
             "  version ......... Version page, same as --version\n"~
             "\nOPTIONS", goptres.options);
         writeln("\nEXAMPLES");
-        writeln("  Listen to an interface with messages:");
+        writeln("  Listen to an interface with verbose messages:");
         writeln("    powerwatch listen --device=plughw:CARD=Generic,DEV=0 --verbose");
         return 0;
     }
@@ -419,11 +419,12 @@ int main(string[] args)
             }
             // Test formats
             write("    Formats: ");
-            try foreach (i, fmt; AFORMATS)
+            int p;
+            try foreach (fmt; AFORMATS)
             {
                 if (alsa.samplingFormatAvailableForDevice(dev.name, fmt.format))
                 {
-                    if (i) write(", ");
+                    if (p++) write(", ");
                     write(fmt.name);
                 }
             }
