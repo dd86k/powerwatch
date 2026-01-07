@@ -260,7 +260,7 @@ class WavWriter
           file.open(path, "wb");
      }
      
-     void setinfo(WavFormat format, ushort bit,
+     void writeHeader(WavFormat format, ushort bit,
           ushort channels, uint samplerate, size_t sample_total)
      {
           if (bit == 24)
@@ -302,6 +302,8 @@ class WavWriter
           file.rawWrite("data");
           file.rawWrite(sz.buffer);
      }
+     /// Old alias
+     alias setinfo = writeHeader;
      
      void write(T = short)(T[] samples)
      {
