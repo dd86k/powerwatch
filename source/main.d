@@ -169,15 +169,17 @@ void dumpbuffer(string path, void *buffer, size_t totalsamples, SamplingFormat f
 // TODO: New thread for analysis
 //       Copy received buffer to other thread
 // NOTE: spawn template can't deal with optional params
-void thread_listen(Tid parent, string device, AsoundConfig config, int targetfreq, int binsize,
+void listen(Tid parent, string device, AsoundConfig config, int targetfreq, int binsize,
     bool verbose)
 {
+    // TODO: Remove compile-time hack
     static if (is(Sample == short))
         enum AFORMAT = SND_PCM_FORMAT_S16_LE;
     else static if (is(Sample == float))
         enum AFORMAT = SND_PCM_FORMAT_FLOAT_LE;
     else
         static assert(0, "format");
+    
     enum AMT = 20;  // number of record "slices" for backbuffer.
                     // typically, a "slice" is an amount of frames, containing samples.
                     // 32K * 20 = 655360 samples
@@ -216,8 +218,6 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
         // HACK: Make it easier to perform FFT since class Fft only takes base-2 lengths
         config.period_size = binsize * channels;
         
-        // TODO: Select 32-bit IEEE floats over S16
-        
         // Backbuffer setup
         Sample[] backbuffer = new Sample[config.period_size * AMT]; // already zero'd
         size_t backi;   /// backbuffer "slice" index
@@ -234,7 +234,7 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
         {
             stderr.writeln("Listening through ", device, "...");
             stderr.writeln("Ch = ", channels);
-            stderr.writeln("Fm = ", AFORMAT == SND_PCM_FORMAT_S16_LE ? "S16_LE" : "IEEE_F32_LE");
+            stderr.writeln("Fm = ", Asound.formatString(config.format));
             stderr.writeln("Ta = ", targetfreq);
             stderr.writeln("Bs = ", binsize);
             stderr.writeln("Ps = ", config.period_size);
@@ -471,29 +471,6 @@ int main(string[] args)
     
     switch (action) {
     case "list": // list input-capable devices
-        struct AFormat
-        {
-            int format;
-            string name;
-        }
-        static immutable AFormat[] AFORMATS = [
-            { SND_PCM_FORMAT_S16_LE, "S16_LE" },
-            { SND_PCM_FORMAT_S16_BE, "S16_BE" },
-            { SND_PCM_FORMAT_U16_LE, "U16_LE" },
-            { SND_PCM_FORMAT_U16_BE, "U16_BE" },
-            { SND_PCM_FORMAT_S24_LE, "S24_LE" },
-            { SND_PCM_FORMAT_S24_BE, "S24_BE" },
-            { SND_PCM_FORMAT_U24_LE, "U24_LE" },
-            { SND_PCM_FORMAT_U24_BE, "U24_BE" },
-            { SND_PCM_FORMAT_S32_LE, "S32_LE" },
-            { SND_PCM_FORMAT_S32_BE, "S32_BE" },
-            { SND_PCM_FORMAT_U32_LE, "U32_LE" },
-            { SND_PCM_FORMAT_U32_BE, "U32_BE" },
-            { SND_PCM_FORMAT_FLOAT_LE, "FLOAT_LE" },
-            { SND_PCM_FORMAT_FLOAT_BE, "FLOAT_BE" },
-            { SND_PCM_FORMAT_FLOAT64_LE, "FLOAT64_LE" },
-            { SND_PCM_FORMAT_FLOAT64_BE, "FLOAT64_BE" },
-        ];
         writeln("Input devices (ALSA):");
         scope Asound alsa = new Asound();
         foreach (dev; alsa.listPCMDevices())
@@ -550,14 +527,46 @@ int main(string[] args)
             throw new Exception("Need audio interface");
         }
         
-        AsoundConfig config = AsoundConfig(cliopts.rate, 1, cliopts.rate);
+        // TODO: Auto detect/select Format
+        //       scoped allocation in a scope
+        int format = SND_PCM_FORMAT_UNKNOWN;
+        {
+            // Supported formats
+            static immutable int[] supported = [
+                SND_PCM_FORMAT_S16_LE,
+                //SND_PCM_FORMAT_S24_LE,
+                //SND_PCM_FORMAT_S32_LE,
+                SND_PCM_FORMAT_FLOAT_LE,
+            ];
+            scope Asound asound = new Asound();
+            foreach (int fmt; supported)
+            {
+                if (asound.samplingFormatAvailableForDevice(cliopts.device, fmt))
+                {
+                    format = fmt;
+                    break;
+                }
+            }
+        }
+        if (format == SND_PCM_FORMAT_UNKNOWN)
+            throw new Exception("Device has not compatible formats");
+        
+        AsoundConfig config = AsoundConfig(
+            cliopts.rate,   // rate
+            1,              // channels
+            cliopts.rate,   // period size
+            format          // format
+        );
+        
+        // TODO: Remove threading
         Tid tid_listener =
-            spawn(&thread_listen, thisTid,
+            spawn(&listen, thisTid,
                 cliopts.device, config, cliopts.target, cliopts.binsize,
                 cliopts.verbose);
         
         import std.string : stripRight, split;
     Lread:
+        // TODO: Poll for error and quit on error msg
         string[] r = readln().stripRight().split(' ');
         if (r.length == 0)
             goto Lread;

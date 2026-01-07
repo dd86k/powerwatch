@@ -19,6 +19,7 @@ enum SND_PCM_ACCESS_MMAP_NONINTERLEAVED = _snd_pcm_access.SND_PCM_ACCESS_MMAP_NO
 enum SND_PCM_ACCESS_MMAP_COMPLEX        = _snd_pcm_access.SND_PCM_ACCESS_MMAP_COMPLEX;
 enum SND_PCM_ACCESS_RW_INTERLEAVED      = _snd_pcm_access.SND_PCM_ACCESS_RW_INTERLEAVED;
 enum SND_PCM_ACCESS_RW_NONINTERLEAVED   = _snd_pcm_access.SND_PCM_ACCESS_RW_NONINTERLEAVED;
+enum SND_PCM_FORMAT_UNKNOWN     = _snd_pcm_format.SND_PCM_FORMAT_UNKNOWN;
 enum SND_PCM_FORMAT_S8          = _snd_pcm_format.SND_PCM_FORMAT_S8;
 enum SND_PCM_FORMAT_U8          = _snd_pcm_format.SND_PCM_FORMAT_U8;
 enum SND_PCM_FORMAT_U16_LE      = _snd_pcm_format.SND_PCM_FORMAT_U16_LE;
@@ -92,9 +93,43 @@ struct AsoundConfig
     int format      = SND_PCM_FORMAT_S16_LE;
 }
 
+struct AFormat
+{
+    int format;
+    string name;
+}
+static immutable AFormat[] AFORMATS = [
+    { SND_PCM_FORMAT_S16_LE, "S16_LE" },
+    { SND_PCM_FORMAT_S16_BE, "S16_BE" },
+    { SND_PCM_FORMAT_U16_LE, "U16_LE" },
+    { SND_PCM_FORMAT_U16_BE, "U16_BE" },
+    { SND_PCM_FORMAT_S24_LE, "S24_LE" },
+    { SND_PCM_FORMAT_S24_BE, "S24_BE" },
+    { SND_PCM_FORMAT_U24_LE, "U24_LE" },
+    { SND_PCM_FORMAT_U24_BE, "U24_BE" },
+    { SND_PCM_FORMAT_S32_LE, "S32_LE" },
+    { SND_PCM_FORMAT_S32_BE, "S32_BE" },
+    { SND_PCM_FORMAT_U32_LE, "U32_LE" },
+    { SND_PCM_FORMAT_U32_BE, "U32_BE" },
+    { SND_PCM_FORMAT_FLOAT_LE, "FLOAT_LE" },
+    { SND_PCM_FORMAT_FLOAT_BE, "FLOAT_BE" },
+    { SND_PCM_FORMAT_FLOAT64_LE, "FLOAT64_LE" },
+    { SND_PCM_FORMAT_FLOAT64_BE, "FLOAT64_BE" },
+];
+
 // 
 class Asound
 {
+    static string formatString(int fmt)
+    {
+        foreach (ref immutable(AFormat) afmt; AFORMATS)
+        {
+            if (afmt.format == fmt)
+                return afmt.name;
+        }
+        return null;
+    }
+    
     this()
     {
         snd_lib_error_set_handler(null);
