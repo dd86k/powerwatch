@@ -260,23 +260,28 @@ class WavWriter
           file.open(path, "wb");
      }
      
-     void setinfo(WavFormat format,
+     void setinfo(WavFormat format, ushort bit,
           ushort channels, uint samplerate, size_t sample_total)
      {
+          if (bit == 24)
+               throw new Exception("unsupported");
+          //ushort filebit = bit;
+          //if (bit == 24) filebit = 32; // alignment
+          ushort bytesz = bit / 8;
           fmt = FormatChunk(
-               format, // can only do s16 atm
+               format,
                channels,
                samplerate,
                // Data rate in byte/s.
-               cast(uint)(samplerate * channels * short.sizeof),
+               cast(uint)(samplerate * channels * bytesz),
                // Bytes per frames (NbrChannels * BitsPerSample / 8).
-               cast(ushort)((short.sizeof) * channels),
-               // Bits per sample.
-               short.sizeof * 8); // sample bits, 16-bit
+               cast(ushort)(bit * channels),
+               // Bits per sample. (uint.sizeof * 8)
+               bit); // sample bits (e.g., 16-bit shorts or 32-bit floats)
           
           file.seek(0); // if resetting
           
-          uint datasize = cast(uint)(sample_total * short.sizeof * channels);
+          uint datasize = cast(uint)(sample_total * bytesz * channels);
           
           // RIFF signature, media chunk size, and media type
           U4 sz = U4(cast(uint)(
@@ -298,13 +303,22 @@ class WavWriter
           file.rawWrite(sz.buffer);
      }
      
-     void write(short[] samples)
+     void write(T = short)(T[] samples)
      {
           if (samples.length == 0)
                return;
           
           // write samples
-          file.rawWrite(samples);
+          /*
+          if (fmt.samplebits == 24)
+               foreach (samp; samples)
+               {
+                    U4 u4 = U4(samp);
+                    file.rawWrite(u4.buffer[0..3]);
+               }
+          else
+          */
+               file.rawWrite(samples);
      }
      
 private:

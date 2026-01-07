@@ -114,7 +114,6 @@ class Asound
         
         AsoundPCMDev[] devs;
         
-        char *desc1;
         void **n = hints;
         const(char) *filter = stream == SND_PCM_STREAM_CAPTURE ? "Input" : "Output";
         while (*n != null)
@@ -131,23 +130,6 @@ class Asound
                 // Can have multiple descriptions separated by newlines
                 fromStringz( desc ).idup.split('\n')
             );
-            
-            /*
-            printf("%s\n", name);
-            if ((desc1 = desc) != null)
-            {
-                printf("    ");
-                while (*desc1)
-                {
-                    if (*desc1 == '\n')
-                        printf("\n    ");
-                    else
-                        putchar(*desc1);
-                    desc1++;
-                }
-                putchar('\n');
-            }
-            */
             
         Lend:
             if (name != null) free(name);

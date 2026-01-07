@@ -55,7 +55,55 @@ struct MsgDone
     
 }
 
-alias Sample = short; // Sampling type (short=S16)
+enum SamplingFormat
+{
+    s16le = SND_PCM_FORMAT_S16_LE,
+    s24le = SND_PCM_FORMAT_S24_LE,
+    s32le = SND_PCM_FORMAT_S32_LE,
+    f32le = SND_PCM_FORMAT_FLOAT_LE,
+}
+string samplingFormatToString(SamplingFormat fmt)
+{
+    version (linux)
+    final switch (fmt) {
+    case SamplingFormat.s16le: return "S16_LE";
+    case SamplingFormat.s24le: return "S24_LE";
+    case SamplingFormat.s32le: return "S32_LE";
+    case SamplingFormat.f32le:   return "FLOAT_LE";
+    }
+    else static assert(0, "sampling format");
+}
+int samplingFormatToNative(SamplingFormat fmt)
+{
+    version (linux)
+    final switch (fmt) {
+    case SamplingFormat.s16le: return SND_PCM_FORMAT_S16_LE;
+    case SamplingFormat.s24le: return SND_PCM_FORMAT_S24_LE;
+    case SamplingFormat.s32le: return SND_PCM_FORMAT_S32_LE;
+    case SamplingFormat.f32le:   return SND_PCM_FORMAT_FLOAT_LE;
+    }
+    else static assert(0, "sampling format");
+}
+int samplingFormatSize(SamplingFormat fmt) {
+    final switch (fmt) {
+    case SamplingFormat.s16le: return 2;
+    case SamplingFormat.s24le: // 3 bytes, but aligned to uint?
+    case SamplingFormat.s32le:
+    case SamplingFormat.f32le:   return 4;
+    }
+}
+immutable SamplingFormat[] SUPPORTED_FORMATS = [
+    SamplingFormat.s16le,
+    SamplingFormat.s32le,
+    SamplingFormat.f32le,
+];
+
+alias Sample = float; // Sampling type (short=S16, float=IEEE 32-bit floats)
+alias BinPrecision = float;
+alias Bin = Complex!BinPrecision;
+
+// TODO: Add "unknown" for learning
+enum State { down, up }
 
 /// Get name of dump when writing
 string dumpname()
@@ -67,32 +115,56 @@ string dumpname()
         time.hour, time.minute, time.second);
 }
 /// Save backbuffer
-void dumpbuffer(string path, Sample[] buffer,
-    size_t periodsize, size_t periodcounts, size_t periodidx,
+void dumpbuffer(string path, void *buffer, size_t totalsamples, SamplingFormat fmt,
+    size_t pidx, size_t psize, size_t pcount,
     int sample_rate)
 {
-    static if (is(Sample == short))
-        enum FORMAT = WavFormat.pcm;
-    else static if (is(Sample == float))
-        enum FORMAT = WavFormat.ieee_float;
-    else
-        static assert(0, "format");
+    ushort bit;
+    WavFormat wfmt;
+    final switch (fmt) {
+    case SamplingFormat.s16le:
+        wfmt = WavFormat.pcm;
+        bit = 16;
+        break;
+    case SamplingFormat.s24le:
+        wfmt = WavFormat.pcm;
+        bit = 24;
+        break;
+    case SamplingFormat.s32le:
+        wfmt = WavFormat.pcm;
+        bit = 32;
+        break;
+    case SamplingFormat.f32le:
+        wfmt = WavFormat.ieee_float;
+        bit = 32;
+        break;
+    }
+    
     enum CHANNELS = 1;
     
     // HACK: Fixes last "slice" being saved first
-    ++periodidx;
+    ++pidx;
     
     scope WavWriter writer = new WavWriter(path);
-    writer.setinfo(FORMAT, CHANNELS, sample_rate, buffer.length);
-    for (size_t t; t < periodcounts; t++, periodidx++)
+    writer.setinfo(wfmt, bit, CHANNELS, sample_rate, totalsamples);
+    for (size_t t; t < pcount; t++, pidx++)
     {
-        if (periodidx >= periodcounts) periodidx = 0; // round-trip
-        size_t z = periodidx * periodsize;
-        writer.write(buffer[z .. z + periodsize]);
+        if (pidx >= pcount) pidx = 0; // round-trip
+        size_t z = pidx * psize;
+        final switch (fmt) {
+        case SamplingFormat.s16le:
+            short[] r = (cast(short*)buffer)[z .. z + psize];
+            writer.write!short(r);
+            break;
+        case SamplingFormat.s24le:
+        case SamplingFormat.s32le:
+        case SamplingFormat.f32le:
+            int[] r = (cast(int*)buffer)[z .. z + psize];
+            writer.write!int(r);
+            break;
+        }
     }
 }
-
-enum State : ubyte { down, up }
 
 // TODO: New thread for analysis
 //       Copy received buffer to other thread
@@ -101,9 +173,9 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
     bool verbose)
 {
     static if (is(Sample == short))
-        enum FORMAT = SND_PCM_FORMAT_S16_LE;
+        enum AFORMAT = SND_PCM_FORMAT_S16_LE;
     else static if (is(Sample == float))
-        enum FORMAT = SND_PCM_FORMAT_FLOAT_LE;
+        enum AFORMAT = SND_PCM_FORMAT_FLOAT_LE;
     else
         static assert(0, "format");
     enum AMT = 20;  // number of record "slices" for backbuffer.
@@ -112,6 +184,7 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
                     // 655360 @ 48000 s/s = ~13.65 secs
     enum REC0 = AMT / 2;    // record after this many "slices" have passed.
                             // the event should be around the middle
+    bool apply_window = true;
     try
     {
         // Setup alsa stuff
@@ -138,7 +211,7 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
         }
         
         // Automatically select format depending on compile type
-        config.format = FORMAT;
+        config.format = AFORMAT;
         
         // HACK: Make it easier to perform FFT since class Fft only takes base-2 lengths
         config.period_size = binsize * channels;
@@ -161,9 +234,10 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
         {
             stderr.writeln("Listening through ", device, "...");
             stderr.writeln("Ch = ", channels);
-            stderr.writeln("Fm = ", FORMAT == SND_PCM_FORMAT_S16_LE ? "S16_LE" : "IEEE_F32");
+            stderr.writeln("Fm = ", AFORMAT == SND_PCM_FORMAT_S16_LE ? "S16_LE" : "IEEE_F32_LE");
             stderr.writeln("Ta = ", targetfreq);
             stderr.writeln("Bs = ", binsize);
+            stderr.writeln("Ps = ", config.period_size);
             stderr.writeln("Sr = ", config.sample_rate);
             stderr.writefln("Re = %f", freqresolution(binsize, config.sample_rate));
         }
@@ -184,7 +258,7 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
                 for (size_t i; i < nframes; i++)
                     p[i] = p[i * channels];
             }
-            short[] samples = (cast(Sample*)buffer)[0..nframes];
+            Sample[] samples = (cast(Sample*)buffer)[0..nframes];
             
             // Copy immediate buffer into back buffer (assuming mono-channel)
             memcpy( // Copy one "slice"
@@ -207,23 +281,35 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
             }
             receiveTimeout(polldur, (MsgSave ms) {
                 string name = dumpname();
-                dumpbuffer(name, backbuffer, config.period_size, AMT, backi, config.sample_rate);
+                dumpbuffer(name, backbuffer.ptr, backbuffer.length, SamplingFormat.s16le,
+                    backi, config.period_size, AMT, config.sample_rate);
                 if (verbose)
                     stderr.writeln("Du = ", name);
                 send(parent, MsgDone());
             });
             
+            if (apply_window)
+            {
+                int N = cast(int)samples.length;
+                for (int i; i < N; i++)
+                {
+                    float f = cast(float)samples[i] / 32767;
+                    samples[i] = cast(short)(blackman_window!float(f, i, N) * 32767);
+                }
+            }
+            
             // FFT, this may modify the immediate buffer
             Duration d0 = sw.peek();
-            ResultFrame frame = analyzer.fft(samples, config.sample_rate, targetfreq);
+            //ResultFrame frame = analyzer.fft(samples, config.sample_rate, targetfreq);
+            Bin frame = analyzer.fftfreq!Sample(samples, config.sample_rate, targetfreq);
+            BinPrecision mag = magnitude!BinPrecision(frame);
             Duration d1 = sw.peek();
             ReducedDur rd = reduceDuration(d1 - d0);
             
             // print info
             if (verbose)
             {
-                stderr.writefln("PT = %3d %s, M = %10.1f",
-                    rd.t, rd.unit, frame.magnitude);
+                stderr.writefln("PT = %3d %s, M = %10.1f, f = %10.1f", rd.t, rd.unit, mag, frame);
             }
             
             // Threshold needs to be set after some time.
@@ -246,7 +332,8 @@ void thread_listen(Tid parent, string device, AsoundConfig config, int targetfre
             if (holding == true && ++reci == REC0)
             {
                 string name = dumpname();
-                dumpbuffer(name, backbuffer, config.period_size, AMT, backi, config.sample_rate);
+                dumpbuffer(name, backbuffer.ptr, backbuffer.length, SamplingFormat.s16le,
+                    backi, config.period_size, AMT, config.sample_rate);
                 stderr.writeln("Du = ", name);
                 
                 // reset record status, allowing the checks for new states again
@@ -420,17 +507,17 @@ int main(string[] args)
             // Test formats
             write("    Formats: ");
             int p;
-            try foreach (fmt; AFORMATS)
+            foreach (fmt; AFORMATS)
             {
-                if (alsa.samplingFormatAvailableForDevice(dev.name, fmt.format))
+                try if (alsa.samplingFormatAvailableForDevice(dev.name, fmt.format))
                 {
                     if (p++) write(", ");
                     write(fmt.name);
                 }
-            }
-            catch (Exception ex)
-            {
-                
+                catch (Exception ex)
+                {
+                    
+                }
             }
             writeln();
         }
@@ -659,18 +746,67 @@ int main(string[] args)
         enum TARGET = 60;     // Hz
         enum RATE   = 48_000; // samples/s
         enum SECS   = 30;     // 30s * 48000hz * short.sizeof = ~2.75 MiB
-        short[] samples = new short[RATE * SECS]; // S16 PCM
-        for (size_t i; i < samples.length; i++)
+        
+        // S16
         {
-            samples[i] = cast(short)((short.max / 2) * sin(2 * PI * i * TARGET / RATE));
+            scope short[] samples_s16 = new short[RATE * SECS];
+            for (size_t i; i < samples_s16.length; i++)
+            {
+                enum AMPLITUDE = (short.max / 2);
+                samples_s16[i] = cast(short)(AMPLITUDE * sin(2 * PI * i * TARGET / RATE));
+            }
+            string name_s16 = "test-write-s16.wav";
+            dumpbuffer(name_s16, samples_s16.ptr, samples_s16.length, SamplingFormat.s16le,
+                0, RATE, SECS,
+                RATE);
+            writeln(name_s16, " written");
         }
         
-        dumpbuffer("test-write.wav", samples, RATE, SECS, 0, RATE); // or have "test-dump" for this
-        /*
-        scope WavWriter writer = new WavWriter("test-write.wav");
-        writer.setinfo(WavFormat.pcm, 1, RATE, samples.length);
-        writer.write(samples);
-        */
+        // S24
+        /*{
+            scope int[] samples_s24 = new int[RATE * SECS];
+            for (size_t i; i < samples_s24.length; i++)
+            {
+                enum MAX24 = int.max & 0x7fffff;
+                enum AMPLITUDE = (MAX24 / 2);
+                samples_s24[i] = cast(int)(AMPLITUDE * sin(2 * PI * i * TARGET / RATE)) & 0xffffff;
+            }
+            string name_s24 = "test-write-s24.wav";
+            dumpbuffer(name_s24, samples_s24.ptr, samples_s24.length, SamplingFormat.s24le,
+                0, RATE, SECS,
+                RATE);
+            writeln(name_s24, " written");
+        }*/
+        
+        // S32
+        {
+            scope int[] samples_s32 = new int[RATE * SECS];
+            for (size_t i; i < samples_s32.length; i++)
+            {
+                enum AMPLITUDE = (int.max / 2);
+                samples_s32[i] = cast(int)(AMPLITUDE * sin(2 * PI * i * TARGET / RATE));
+            }
+            string name_s32 = "test-write-s32.wav";
+            dumpbuffer(name_s32, samples_s32.ptr, samples_s32.length, SamplingFormat.s32le,
+                0, RATE, SECS,
+                RATE);
+            writeln(name_s32, " written");
+        }
+        
+        // IEEE F32
+        {
+            scope float[] samples_f32 = new float[RATE * SECS];
+            for (size_t i; i < samples_f32.length; i++)
+            {
+                enum AMPLITUDE = 0.5; // 1.0 / 2
+                samples_f32[i] = AMPLITUDE * sin(2 * PI * i * TARGET / RATE);
+            }
+            string name_f32 = "test-write-f32.wav";
+            dumpbuffer(name_f32, samples_f32.ptr, samples_f32.length, SamplingFormat.f32le,
+                0, RATE, SECS,
+                RATE);
+            writeln(name_f32, " written");
+        }
         break;
     case "help": goto Lhelp;
     case "version": CLI_version(); break;
