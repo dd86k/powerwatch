@@ -110,7 +110,7 @@ class Asound
         void **hints;
         int error = snd_device_name_hint(-1, "pcm", &hints);
         if (error < 0)
-            throw new AsoundException(error, "Failed to get device name hints");
+            throw new AsoundException(error, "snd_device_name_hint");
         
         AsoundPCMDev[] devs;
         
@@ -171,14 +171,14 @@ class Asound
                 // If the card does not exist, continue to the next
                 if (err == -ENOENT)
                     continue;
-                throw new AsoundException(err);
+                throw new AsoundException(err, "snd_ctl_open");
             }
             scope(exit) snd_ctl_close(handle);
             
             // Get card information
             if ((err = snd_ctl_card_info(handle, info)) < 0)
             {
-                throw new AsoundException(err);
+                throw new AsoundException(err, "snd_ctl_card_info");
             }
             // Enumerate PCM devices
             int device = -1;
@@ -234,15 +234,16 @@ class Asound
         snd_pcm_t *handle;
         int error = snd_pcm_open(&handle, toStringz( device ), cast(_snd_pcm_stream)stream, 0);
         if (error < 0)
-            throw new AsoundException(error);
+            throw new AsoundException(error, "snd_pcm_open");
         scope(exit) snd_pcm_close(handle);
         
         snd_pcm_hw_params_t *hw_params;
         if ((error = snd_pcm_hw_params_malloc(&hw_params)) < 0)
-            throw new AsoundException(error, "Failed to allocate HW params");
+            throw new AsoundException(error, "snd_pcm_hw_params_malloc");
         scope(exit) snd_pcm_hw_params_free(hw_params);
+        
         if ((error = snd_pcm_hw_params_any(handle, hw_params)) < 0)
-            throw new AsoundException(error, "Failed to retrieve HW params");
+            throw new AsoundException(error, "snd_pcm_hw_params_any");
         
         return snd_pcm_hw_params_test_format(handle, hw_params, cast(_snd_pcm_format)fmt) >= 0;
     }
@@ -257,19 +258,20 @@ class Asound
         snd_pcm_t *handle;
         int error = snd_pcm_open(&handle, toStringz( device ), cast(_snd_pcm_stream)stream, 0);
         if (error < 0)
-            throw new AsoundException(error);
+            throw new AsoundException(error, "snd_pcm_open");
         scope(exit) snd_pcm_close(handle);
         
         snd_pcm_hw_params_t *hw_params;
         if ((error = snd_pcm_hw_params_malloc(&hw_params)) < 0)
-            throw new AsoundException(error, "Failed to allocate HW params");
+            throw new AsoundException(error, "snd_pcm_hw_params_malloc");
         scope(exit) snd_pcm_hw_params_free(hw_params);
+        
         if ((error = snd_pcm_hw_params_any(handle, hw_params)) < 0)
-            throw new AsoundException(error, "Failed to retrieve HW params");
+            throw new AsoundException(error, "snd_pcm_hw_params_any");
         
         uint chans;
         if ((error = snd_pcm_hw_params_get_channels(hw_params, &chans)) < 0)
-            throw new AsoundException(error);
+            throw new AsoundException(error, "snd_pcm_hw_params_get_channels");
         
         return chans;
     }
@@ -302,14 +304,14 @@ class Asound
                 // If the card does not exist, continue to the next
                 if (err == -ENOENT)
                     continue;
-                throw new AsoundException(err);
+                throw new AsoundException(err, "snd_ctl_open");
             }
             scope(exit) snd_ctl_close(handle);
             
             // Get card information
             if ((err = snd_ctl_card_info(handle, info)) < 0)
             {
-                throw new AsoundException(err);
+                throw new AsoundException(err, "snd_ctl_card_info");
             }
 
             // Print card information
@@ -372,7 +374,7 @@ class Asound
         snd_pcm_t *handle;
         int error = snd_pcm_open(&handle, toStringz( device ), SND_PCM_STREAM_CAPTURE, 0);
         if (error < 0)
-            throw new AsoundException(error, "Failed to open device");
+            throw new AsoundException(error, "snd_pcm_open");
         scope(exit) snd_pcm_close(handle);
         
         // Setup sw
@@ -388,19 +390,20 @@ class Asound
         // Setup hw
         snd_pcm_hw_params_t *hw_params;
         if ((error = snd_pcm_hw_params_malloc(&hw_params)) < 0)
-            throw new AsoundException(error, "Could not allocate HW params");
+            throw new AsoundException(error, "snd_pcm_hw_params_malloc");
         scope(exit) snd_pcm_hw_params_free(hw_params);
+        
         if (snd_pcm_hw_params_any(handle, hw_params) < 0)
             throw new Exception("Failed to retrieve HW params");
         
         // Setup ALSA internal parameters
         if ((error = snd_pcm_hw_params_set_access(handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0)
-            throw new AsoundException(error, "Can't set PCM acces to interleaved mode");
+            throw new AsoundException(error, "snd_pcm_hw_params_set_access");
         if ((error = snd_pcm_hw_params_set_format(handle, hw_params, cast(_snd_pcm_format)config.format)) < 0)
-            throw new AsoundException(error, "Can't set PCM format");
+            throw new AsoundException(error, "snd_pcm_hw_params_set_format");
         if (config.channels != 0 && // avoid setting when channel count left unspecified
             (error = snd_pcm_hw_params_set_channels(handle, hw_params, config.channels)) < 0)
-            throw new AsoundException(error, "Can't set PCM channel count");
+            throw new AsoundException(error, "snd_pcm_hw_params_set_channels");
         /*
         uint channels;
         if ((error = snd_pcm_hw_params_get_channels(hw_params, &channels)) < 0)
@@ -408,14 +411,15 @@ class Asound
         */
         uint sample_rate = config.sample_rate; // samples/s
         if ((error = snd_pcm_hw_params_set_rate_near(handle, hw_params, &sample_rate, null)) < 0)
-            throw new AsoundException(error, "Can't set number rate");
+            throw new AsoundException(error, "snd_pcm_hw_params_set_rate_near");
+        
         snd_pcm_uframes_t period_size = config.period_size; // ulong: get notified every N frames
         if ((error = snd_pcm_hw_params_set_period_size_near(handle, hw_params, &period_size, null)) < 0)
-            throw new AsoundException(error, "Can't set period size");
+            throw new AsoundException(error, "snd_pcm_hw_params_set_period_size_near");
 
         // Push HW params
         if ((error = snd_pcm_hw_params(handle, hw_params)) < 0)
-            throw new AsoundException(error, "Failed to setup hw parameters");
+            throw new AsoundException(error, "snd_pcm_hw_params");
         
         int status = 1;
         while (status)
@@ -428,7 +432,7 @@ class Asound
                 error = cast(int)readn;
                 int recover = snd_pcm_recover(handle, error, SND_ERR_SILENCE);
                 if (recover < 0)
-                    throw new AsoundException(error, "Failed to recover state");
+                    throw new AsoundException(error, "snd_pcm_recover");
             }
             if (readn == 0)
                 continue;
