@@ -59,7 +59,19 @@ int main(string[] args)
     CLIOptions opts;
     GetoptResult goptres = void;
     try goptres = getopt(args, config.caseSensitive,
-        "binsize",   MSG_binsize, &opts.binsize,
+        "binsize",   MSG_binsize,
+        (string _, string val)
+        {
+            import std.conv : to;
+            int c = val[$-1];
+            if (c == 'k' || c == 'K')
+            {
+                opts.binsize = to!int(val[0..$-1]);
+                opts.binsize *= 1024;
+            }
+            else
+                opts.binsize = to!int(val);
+        },
         "target",    MSG_target, &opts.target,
         "rate",      MSG_rate, &opts.rate,
         "device",    "Device to listen from (required for 'listen')", &opts.device,
