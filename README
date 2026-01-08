@@ -1,12 +1,12 @@
 AC hum monitoring tool.
 
 In summary, this listens to an ALSA PCM capture interface and holds a memory
-buffer. If an event happens (flunctuation, brownout, or blackout), this utility
-will automatically dump the in-memory buffer into the disk.
+buffer. If a power event happens, this utility will automatically dump
+the in-memory buffer into the disk.
 
 The goal of this project is to learn a little more on DSP and provide a
-monitoring tool for power events. Needless to say, a laptop (or other
-battery/UPS-powered device) should be used.
+monitoring tool for power events (flunctuation, brownout, or blackout).
+Needless to say, a laptop (or other battery-powered device) should be used.
 
 The code is in a bit of a rough shape, don't expect too much out of it.
 
@@ -16,9 +16,12 @@ TODO:
   - Increase FFT window, find peak, etc...
 - Do external action(s) on an event
   - ie, execute program/script in a new thread
-  - maybe $1 should be the state? (up/down)
-  - future state can be type of event or $2
+  - $1: path to recorded event
+  - $2: state (up/down)
+  - $3: event type (when able...)
+  - or do inline json (via stdio) with newline
 - Detect brownout and flunctuation events
+- Recover after sleep modes / interruptions
 
 LICENSE: CC0 1.0 Universal
 THANKS: pelp3;, cool_lantern, syncpulse
@@ -33,7 +36,7 @@ First, you can to list available capture devices:
   powerwatch list
 
 Then, use device to listen to:
-  powerwatch listen --device=plughw:CARD=Generic,DEV=0 --verbose
+  powerwatch listen --device=plughw:CARD=Generic,DEV=0 --verbose --binsize=128K
 
 #
 # Hacking
