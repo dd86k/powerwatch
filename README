@@ -1,16 +1,46 @@
-In summary, this listens to an ALSA PCM capture interface and automatically
-records a memory buffer if the learned magnitude of the target frequency drops
-or picks up again.
+AC hum monitoring tool.
+
+In summary, this listens to an ALSA PCM capture interface and holds a memory
+buffer. If an event happens (flunctuation, brownout, or blackout), this utility
+will automatically dump the in-memory buffer into the disk.
+
+The goal of this project is to learn a little more on DSP and provide a
+monitoring tool for power events. Needless to say, a laptop (or other
+battery/UPS-powered device) should be used.
 
 The code is in a bit of a rough shape, don't expect too much out of it.
 
-REQUIREMENTS:
-- DUB
-- A D compiler (dmd, gdc, or ldc2)
-- libasound2-dev (ALSA dev library)
-
 TODO:
 - Support hw: (and stereo) interfaces
+- Improve algorithm (currently unusable)
+  - Increase FFT window, find peak, etc...
+- Do external action(s) on an event
+  - ie, execute program/script in a new thread
+  - maybe $1 should be the state? (up/down)
+  - future state can be type of event or $2
+- Detect brownout and flunctuation events
 
 LICENSE: CC0 1.0 Universal
 THANKS: pelp3;, cool_lantern, syncpulse
+
+#
+# Usage
+#
+
+Invoke with `--help` for usage.
+
+First, you can to list available capture devices:
+  powerwatch list
+
+Then, use device to listen to:
+  powerwatch listen --device=plughw:CARD=Generic,DEV=0 --verbose
+
+#
+# Hacking
+#
+
+REQUIREMENTS:
+- DUB
+- A D compiler (dmd, gdc, or ldc)
+- ALSA static library
+  - libasound2-dev (Ubuntu)
