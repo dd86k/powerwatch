@@ -14,6 +14,8 @@ import snddrv.asound;
 import std.string : startsWith;
 import std.conv : text;
 import std.complex : Complex;
+import core.stdc.string : memcpy;
+import core.stdc.stdlib : malloc, free;
 
 // TODO: Analyzer class
 //       With buffering (think of "sponge construction", process when full)
@@ -227,6 +229,12 @@ void listen(string device, int sample_rate, int target_frequency, int binsize, b
         SND_PCM_FORMAT_UNKNOWN
     );
     
+    // TODO: Automatically determine sample rate
+    /*COMMON_SAMPLE_RATES = [
+        192000, 176400, 128000, 96000, 88200, 64000,
+        48000, 44100, 32000, 22050, 16000, 11025, 8000
+    ]*/
+    
     scope Asound alsa = new Asound();
     
     // Pick highest quality format
@@ -269,39 +277,46 @@ void listen(string device, int sample_rate, int target_frequency, int binsize, b
         config.channels = 0; // HACK: do not change channels in alsa by force
     }
     
-    // TODO: These should be dynamic settings
-    enum AMT = 20;  // number of record "slices" for backbuffer.
-                    // typically, a "slice" is an amount of frames, containing samples.
-                    // 32K * 20 = 655360 samples
-                    // 655360 @ 48000 s/s = ~13.65 secs
-    enum REC0 = AMT / 2;    // record after this many "slices" have passed.
-                            // the event should be around the middle
+    // Select window function
+    float function(float n, ptrdiff_t n, ptrdiff_t N) window =
+        &hann_window!float;
     
-    size_t frame_size; /// source frame size in Bytes
+    // TODO: These should be dynamic settings
+    /// Time (seconds) that buffer should hold
+    size_t total_time = 20;
+    /// Time (seconds) around event
+    size_t half_time  = total_time / 2;
+    
+    // Determine frame size in bytes for incoming buffer input
+    size_t frame_size;
     switch (config.format) {
-    case SND_PCM_FORMAT_FLOAT_LE:
-        frame_size = float.sizeof;
+    case SND_PCM_FORMAT_FLOAT_LE, SND_PCM_FORMAT_FLOAT_BE:
+    case SND_PCM_FORMAT_S32_LE, SND_PCM_FORMAT_S32_BE:
+        frame_size = 4;
         break;
-    case SND_PCM_FORMAT_S16_LE:
-        frame_size = short.sizeof;
+    case SND_PCM_FORMAT_S24_LE, SND_PCM_FORMAT_S24_BE:
+        frame_size = 3;
+        break;
+    case SND_PCM_FORMAT_S16_LE, SND_PCM_FORMAT_S16_BE:
+        frame_size = 2;
         break;
     default:
         throw new Exception(text("sizeof ",Asound.formatString(config.format), " unknown"));
     }
     
-    bool apply_window = true;
-    
     // HACK: Make it easier to perform FFT since class Fft only takes base-2 lengths
     //config.period_size = binsize * config.channels ? config.channels : 1;
     
-    import core.stdc.stdlib : malloc, free;
     // NOTE: Function doesn't return, so don't bother releasing memory
     //       System will reclaim it anyway
+    
+    // Backbuffer size in samples
+    // 30 s * 48000 Hz = 1 440 000 samples
+    size_t backbuffer_length = total_time * config.sample_rate;
     
     // Setup backbuffer, which SHOULD be circular
     // NOTE: Backbuffer MUST be in FLOAT32 sampling format for consistency
     // TODO: Index should be frame index only, not index of slice
-    size_t backbuffer_length = config.period_size * AMT;
     float *backbuffer = cast(float*)malloc(backbuffer_length * float.sizeof);
     if (backbuffer == null)
         throw new Exception("malloc for backbuffer failed");
@@ -314,45 +329,51 @@ void listen(string device, int sample_rate, int target_frequency, int binsize, b
     float threshold = 0.0;
     State state = State.up; /// Last known state, assume up
     
-    // Print info
-    if (verbose)
-    {
-        // TODO: Get configured amount of channels
-        stderr.writeln("Listening through ", device, "...");
-        stderr.writeln("Ch = ", config.channels);
-        stderr.writeln("Fm = ", Asound.formatString(config.format));
-        stderr.writeln("Tf = ", target_frequency);
-        stderr.writeln("Bs = ", binsize);
-        stderr.writeln("Ps = ", config.period_size);
-        stderr.writeln("Sr = ", config.sample_rate);
-        stderr.writefln("Re = %f", freqresolution(binsize, config.sample_rate));
-    }
-    
     // ALSA buffer
-    size_t aframes = config.channels * config.period_size;
+    config.period_size = binsize;
+    size_t aframes = config.channels * binsize;
     // TODO: Shouldn't buffer be created callee-side?
     void *abuffer = malloc(aframes * frame_size);
     if (abuffer == null)
         throw new Exception("malloc failed for abuffer");
     
-    // TODO: Find peak + alignment before continuing monitoring
+    //
+    // Run
+    //
+    
+    // Print info
+    if (verbose)
+    {
+        // TODO: Get configured amount of channels
+        stderr.writeln("Listening through ", device, "...");
+        stderr.writeln("Ch = ", config.channels, " channel(s)");
+        stderr.writeln("Fm = ", Asound.formatString(config.format));
+        stderr.writeln("Tf = ", target_frequency, " Hz");
+        stderr.writeln("Bs = ", binsize, " bins");
+        stderr.writeln("Ps = ", config.period_size, " samples");
+        stderr.writeln("Sr = ", config.sample_rate, " samples/second");
+        stderr.writefln("Re = %f Hz/bin", freqresolution(binsize, config.sample_rate));
+    }
+    
+    float target_min = cast(float)target_frequency - 0.5;
+    float target_max = cast(float)target_frequency + 0.5;
     
     StopWatch sw;
     sw.start();
     alsa.listen(device, config, abuffer,
     (void *buffer, size_t nframes, ref int astatus)
     {
-        // Copy period time to back buffer
-        import core.stdc.string : memcpy;
+        if (verbose)
+            stderr.writeln("Ac = ", nframes);
         
-        if (backi >= AMT) backi = 0; // round-trip
+        // TODO: Warn if nframes != config.period_size
         
-        // TODO: Fix fixed-buffer approach for backbuffer
-        //       If there is an incomplete number of frames available,
-        //       it means we'll see gaps of silence between "slices"
+        //
+        // 1. resample + window
+        //
         
         // Destination pointer within backbuffer
-        float *dst = backbuffer + (backi * config.period_size);
+        float *dst = backbuffer;
         
         // If we configured with more than one channel,
         // copy only first channel data to force mono-channel
@@ -367,17 +388,19 @@ void listen(string device, int sample_rate, int target_frequency, int binsize, b
                 p[i] = p[i * config.channels];
         }*/
         
-        int N = cast(int)nframes;
+        sw.reset();
         
-        // Change from this source to F32 as destination for FFT/DFT
+        // Change sampling format to F32
+        Duration t0 = sw.peek();
+        int N = cast(int)nframes;
         switch (config.format) {
         case SND_PCM_FORMAT_FLOAT_LE, SND_PCM_FORMAT_FLOAT_BE:
             float *src = cast(float*)buffer;
-            if (apply_window)
+            if (window)
             {
                 for (int i; i < N; i++)
                 {
-                    dst[i] = blackman_window!float(src[i], i, N);
+                    dst[i] = window(src[i], i, N);
                 }
             }
             else
@@ -391,81 +414,47 @@ void listen(string device, int sample_rate, int target_frequency, int binsize, b
             for (int i; i < N; i++)
             {
                 float f = src[i] / 32768.0;
-                if (apply_window)
-                    f = blackman_window(f, i, N);
+                if (window)
+                    f = window(f, i, N);
                 dst[i] = f;
             }
             break;
         default:
-            throw new Exception(text("not impl: resampling"));
+            throw new Exception(text("not impl: resampling on ", config.format));
         }
+        Duration t1 = sw.peek();
         
-        // FFT, this may modify the immediate buffer
-        Duration d0 = sw.peek();
-        // TODO: fix slice to select up to binsize or whatever, this is just bad
-        float[] samples = dst[0..binsize];
-        Complex!float frame = analyzer.fftfreq!float(samples, config.sample_rate, target_frequency);
-        float mag = magnitude!float(frame);
-        Duration d1 = sw.peek();
+        if (verbose)
+            stderr.writefln("Tt = %s", ReducedDuration(t1 - t0));
         
-        // Print processed frame info
+        //
+        // 2. Fourier-transform
+        //
+        
+        Duration t2 = sw.peek();
+        // Optimized discrete function
+        Complex!float[] bins = analyzer.rfft(backbuffer[0..nframes], config.sample_rate, target_min, target_max);
+        Duration t3 = sw.peek();
+        
+        if (verbose)
+            stderr.writefln("Tf = %s", ReducedDuration(t3 - t2));
+        
+        //
+        // 3. Calculate actual frequency of each bin to find minimum and maximum
+        //
+        
+        Duration t4 = sw.peek();
+        import std.math : round;
+        size_t start_bin = cast(size_t)(round(target_min * nframes / config.sample_rate));
+        Peak peak = detectPeak(bins, start_bin, nframes, config.sample_rate);
+        Duration t5 = sw.peek();
+        
         if (verbose)
         {
-            ReducedDuration rd = ReducedDuration(d1 - d0);
-            stderr.writefln("PT = %3d %s, M = %10.1f", rd.base, rd.unit, mag);
+            stderr.writefln("Tp = %s", ReducedDuration(t5 - t4));
+            stderr.writeln("bins = ", bins);
+            stderr.writeln("Peak = ", peak.frequency, " Hz, Mag = ", peak.magnitude, " (", peak.magnitudeDB, " dB)");
         }
-        
-        // Threshold needs to be set after some time.
-        // ALSA software interface (plughw:) might normalize things (better that than
-        // having clipping) so wait for a bit before setting threshold.
-        if (threshold == 0.0 && d1 >= dur!"seconds"(5))
-        {
-            // Make sure we have something and not just zero.
-            float t = frame.magnitude / 4;
-            if (t > 0.0)
-            {
-                threshold = t;
-                if (verbose)
-                    stderr.writefln("Th = %.1f", threshold);
-            }
-        }
-        
-        // Holding a recording until "record index".
-        // When the index hits it, dump the backbuffer.
-        if (holding == true && ++reci == REC0)
-        {
-            string name = dumpname();
-            dumpbuffer(name, backbuffer, backbuffer_length, SamplingFormat.f32le,
-                backi, config.period_size, AMT, config.sample_rate);
-            stderr.writeln("Du = ", name);
-            
-            // reset record status, allowing the checks for new states again
-            holding = false;
-        }
-        
-        // If we're NOT holding for a recording, it's okay to update state.
-        if (holding == false)
-        {
-            // If the magnitude of the analyzed frequency is lower than our
-            // threshold, then changing the status means that something happened.
-            State newstate = frame.magnitude < threshold ? State.down : State.up;
-            
-            // It'd be pointless to dump the buffer when the threshold isn't set or
-            // when we're already waiting to capture enough data for a dump.
-            //
-            // So only initiate a recording if (1) a threshold is set, (2) there isn't
-            // a recording being held, and (3) the state changed (e.g., up to down).
-            if (threshold != 0.0 && holding == false && state != newstate)
-            {
-                holding = true;
-                reci = 0;
-                state = newstate;
-                if (verbose)
-                    writeln("St = ", state);
-            }
-        }
-        
-        backi++; // increase slice index
     });
 }
 
