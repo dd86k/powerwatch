@@ -471,7 +471,6 @@ class Asound
             }
             if (readn == 0)
                 continue;
-            //short[] samples = (cast(short*)buffer)[0..readn * channels];
             cb(buffer, cast(size_t)readn, status);
         }
     }

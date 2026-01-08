@@ -131,7 +131,7 @@ void dumpbuffer(string path, void *buffer, size_t totalsamples, SamplingFormat f
     ++pidx;
     
     scope WavWriter writer = new WavWriter(path);
-    writer.setinfo(wfmt, bit, CHANNELS, sample_rate, totalsamples);
+    writer.writeHeader(wfmt, bit, CHANNELS, sample_rate, totalsamples);
     for (size_t t; t < pcount; t++, pidx++)
     {
         if (pidx >= pcount) pidx = 0; // round-trip
@@ -222,7 +222,7 @@ void listen(string device, AsoundConfig config, int targetfreq, int binsize, boo
     bool apply_window = true;
     
     // HACK: Make it easier to perform FFT since class Fft only takes base-2 lengths
-    config.period_size = binsize * config.channels;
+    //config.period_size = binsize * config.channels ? config.channels : 1;
     
     import core.stdc.stdlib : malloc, free;
     // NOTE: Function doesn't return, so don't bother releasing memory
@@ -312,7 +312,7 @@ void listen(string device, AsoundConfig config, int targetfreq, int binsize, boo
             }
             else
             {
-                // destination is f32, so just copy
+                // source AND destination is f32, so just copy
                 memcpy(dst, src, nframes * float.sizeof);
             }
             break;
@@ -330,18 +330,10 @@ void listen(string device, AsoundConfig config, int targetfreq, int binsize, boo
             throw new Exception(text("not impl: resampling"));
         }
         
-        /+if (apply_window)
-        {
-            for (int i; i < N; i++)
-            {
-                float f = cast(float)samples[i] / 32767; // S16 -> F32
-                samples[i] = cast(short)(blackman_window!float(f, i, N) * 32767);
-            }
-        }+/
-        
         // FFT, this may modify the immediate buffer
         Duration d0 = sw.peek();
-        float[] samples = dst[0..nframes];
+        // TODO: fix slice to select up to binsize or whatever, this is just bad
+        float[] samples = dst[0..binsize];
         Complex!float frame = analyzer.fftfreq!float(samples, config.sample_rate, targetfreq);
         float mag = magnitude!float(frame);
         Duration d1 = sw.peek();
@@ -564,7 +556,8 @@ int main(string[] args)
         AsoundConfig config = AsoundConfig(
             opts.rate,   // rate
             1,              // channels
-            opts.rate,   // period size
+            //opts.rate,   // period/bin size
+            opts.binsize,   // period/bin size
             SND_PCM_FORMAT_UNKNOWN // format
         );
         
