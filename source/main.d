@@ -373,7 +373,7 @@ void listen(string device, AsoundConfig config, int targetfreq, int binsize, boo
         if (holding == true && ++reci == REC0)
         {
             string name = dumpname();
-            dumpbuffer(name, backbuffer, backbuffer_length, SamplingFormat.s16le,
+            dumpbuffer(name, backbuffer, backbuffer_length, SamplingFormat.f32le,
                 backi, config.period_size, AMT, config.sample_rate);
             stderr.writeln("Du = ", name);
             
