@@ -1,6 +1,6 @@
 module wav;
 
-import std.stdio;
+import std.stdio : File, SEEK_SET, SEEK_CUR, SEEK_END;
 
 enum WavFormat : ushort
 {
@@ -44,17 +44,20 @@ struct FormatChunk // fmt_chunk
 // Structure:
 // RIFF signature
 // RIFF size
-// Chunk ID
-// Chunk Size
-// ...
-// Chunk ID
-// Chunk Size
-class WavFile
+//   Chunk ID
+//   Chunk Size
+//   Chunk Data...
+/// WAV file reader
+class WavReader
 {
-     typeof(this) open(string path)
+     this(string path)
      {
           openFile(path);
-          return this;
+     }
+     
+     ~this()
+     {
+          closeFile();
      }
      
      // raw info
@@ -67,20 +70,99 @@ class WavFile
      {
           return fmtchunk.samplerate;
      }
-     
-     short[] readallS16()
+     int channels()
      {
-          if (data_s16 is null)
-          {
-               readData();
-          }
-          
-          return data_s16;
+          return fmtchunk.channels;
      }
-     // old alias
-     alias getData16bit = readallS16;
+     size_t sampleSize()
+     {
+          prepare();
+          
+          return sample_size;
+     }
      
-     // TODO: Stream interface
+     // In samples
+     ulong sampleCount()
+     {
+          prepare();
+          
+          return sample_count;
+     }
+     alias length = sampleCount;
+     
+     // TODO: seek(frame index)
+     // TODO: reset => seek(0)
+     
+     // Read frames*channels worth of audio (buffer[2] for a single frame for 2 channels).
+     // PCM gets normalized to IEEE_FLOAT.
+     float[] read(float[] buffer)
+     {
+          prepare();
+          
+          // TODO: Read chunks in memory (e.g., ubyte[4096]) for performance reasons
+          //       Need interface that automatically reads correct number of frames
+          switch (fmtchunk.format) {
+          case WavFormat.ieee_float:
+               if (fmtchunk.samplebits != 32)
+                    throw new Exception(ESUPBIT);
+               
+               return file.rawRead(buffer);
+          case WavFormat.pcm:
+               size_t i;
+               final switch (fmtchunk.samplebits) {
+               case 16:
+                    enum NORM = 32768.0;
+                    short[1] b16;
+                    for (; i < buffer.length; i++)
+                    {
+                         if (file.rawRead(b16).length == 0)
+                         {
+                              break;
+                         }
+                         
+                         buffer[i] = b16[0] / NORM;
+                    }
+                    return buffer[0..i];
+               case 24:
+                    enum NORM = 8388608.0;
+                    ubyte[3] b24; // Assuming LE
+                    for (; i < buffer.length; i++)
+                    {
+                         if (file.rawRead(b24).length < b24.sizeof)
+                         {
+                              break;
+                         }
+                         
+                         int sample = b24[0] | b24[1] << 8 | b24[2] << 16;
+                         if (sample & 0x80_0000)
+                              sample |= 0xff00_0000; // sign-extend 24->32 bits
+                         buffer[i] = sample / NORM;
+                    }
+                    return buffer[0..i];
+               case 32:
+                    enum NORM = 2147483648.0;
+                    int[1] b32;
+                    for (; i < buffer.length; i++)
+                    {
+                         if (file.rawRead(b32).length == 0)
+                         {
+                              break;
+                         }
+                         
+                         buffer[i] = b32[0] / NORM;
+                    }
+                    return buffer[0..i];
+               }
+               break;
+          default:
+               throw new Exception(ENOFMT);
+          }
+     }
+     
+     bool eof()
+     {
+          return file.eof();
+     }
      
 private:
      // Error messages
@@ -91,6 +173,7 @@ private:
           string ESUPFMT   = "Unsupported format.";
           string ESUPBIT   = "Unsupported sample size.";
           string ECHANNELS = "File has more than 1 channel.";
+          string EINVCHAN  = "Invalid/weird amount of channels.";
           string ENOFMT    = "Could not find the format chunk.";
           string ENODATA   = "Could not find the data chunk.";
      }
@@ -98,16 +181,18 @@ private:
      File file;
      _CHBuf cbuffer = void;
      
+     /// Chunk metadata ready
+     bool ready;
+     
+     /// 
+     ulong sample_count;
+     /// Size of one sample in Bytes (channels * bits)
+     size_t sample_size;
+     
      union
      {
           FormatChunk fmtchunk;
           ubyte[FormatChunk.sizeof] fmtchunk_buffer;
-     }
-     
-     union
-     {
-          short[] data_s16; // 16-bit signed pcm
-          float[] data_f32; // 32-bit float ieee
      }
      
      void openFile(string path)
@@ -122,23 +207,22 @@ private:
           // WAV files may or may not have the RIFF container,
           // but all of them have a WAVE Format Chunk.
           //
-          // TODO: Check if other chunks might appear before Format (other than RIFF)
           if (file.rawRead(cbuffer.buffer).length < _CHBuf.sizeof)
           {
                throw new Exception(ETOOSMALL);
           }
           
           // Check first signature
-          if (cbuffer.header.id32 == CHUNK_DATA) // data already starts
+          if (cbuffer.header.id32 == CHUNK_DATA) // data already starts here
           {
+               // Only read chunk header
                if (file.rawRead(fmtchunk_buffer).length < fmtchunk_buffer.sizeof)
                     throw new Exception(ETOOSMALL);
                return;
           }
-          else if (cbuffer.header.id32 == SIGRIFF)
+          else if (cbuffer.header.id32 == SIGRIFF) // RIFF signature
           {
-               // Read RIFF type
-               char[4] rifftype = void;
+               char[4] rifftype = void; // Check RIFF type
                if (file.rawRead(rifftype).length < rifftype.sizeof)
                     throw new Exception(ETOOSMALL);
                if (rifftype != "WAVE")
@@ -156,26 +240,28 @@ private:
                     throw new Exception(ETOOSMALL);
                
                // If chunk isn't Format ID, skip
-               // TODO: Read SIZE of chunk, and check if Format chunk is extensioned
+               // TODO: Support Chunk Format extensions
+               //       If size of chunk is higher than standard, it has extensions
                if (cbuffer.header.id32 != CHUNK_FORMAT)
                {
-                    // jump to next chunk
-                    long loc = boundup(cbuffer.header.cksize, 2);
-                    file.seek(loc, SEEK_CUR);
+                    // jump to next chunk, this one isn't the Format chunk
+                    file.seek(boundup(cbuffer.header.cksize, 2), SEEK_CUR);
                     continue;
                }
                
-               // Chunk too small to represent Format chunk...?
+               // Chunk too small to represent Format chunk...
                if (cbuffer.header.cksize < FormatChunk.sizeof)
                     throw new Exception(ETOOSMALL);
                
-               // Read Format chunk
+               // Read Format chunk into memory
                if (file.rawRead(fmtchunk_buffer).length < fmtchunk_buffer.sizeof)
                     throw new Exception(ETOOSMALL);
                
-               // jump to next chunk to be ready, which should be "data"
-               long loc = boundup(cbuffer.header.cksize - FormatChunk.sizeof, 2);
-               file.seek(loc, SEEK_CUR);
+               // We have read Format chunk, so seek to next chunk,
+               // which SHOULD be data.
+               // This ensures we skip extensions because we only (so far),
+               // read standard Format Chunk size.
+               file.seek(boundup(cbuffer.header.cksize - FormatChunk.sizeof, 2), SEEK_CUR);
                return;
           }
           
@@ -183,31 +269,29 @@ private:
           throw new Exception(ENOFMT);
      }
      
-     // Read all samples into memory
-     void readData()
+     void closeFile()
      {
-          // channels
-          if (fmtchunk.channels != 1)
-               throw new Exception(ECHANNELS);
+          if (file.isOpen())
+               file.close();
+     }
+     
+     // Assumes header and first chunk were read
+     void prepare()
+     {
+          if (ready)
+               return;
           
-          // sound format
-          switch (fmtchunk.format) {
-          case WavFormat.pcm:
-               if (fmtchunk.samplebits != 16)
-                    throw new Exception(ESUPBIT);
-               break;
-          //case WavFormat.ieee_float:
+          // Ensure working with compatible sample bits
+          switch (fmtchunk.samplebits) {
+          case 8, 16, 24, 32: break;
           default:
-               throw new Exception(ESUPFMT);
+               throw new Exception(ESUPBIT);
           }
+          // Compatible channels
+          if (fmtchunk.channels < 1 || fmtchunk.channels > 8)
+               throw new Exception(EINVCHAN);
           
-          // read those chunks girl
-          // Chunks that can appear before data chunk:
-          // <fmt-ck>
-          // [<fact-ck>]
-          // [<cue-ck>]
-          // [<playlist-ck>]
-          // [<assoc-data-list>]
+          // Locate DATA chunk
           enum MAXCNK = 6;
           for (int i; i < MAXCNK; i++)
           {
@@ -216,6 +300,8 @@ private:
                {
                     break;
                }
+               
+               // Not data chunk, continue to next chunk
                if (cbuffer.header.id32 != CHUNK_DATA)
                {
                     long loc = boundup(cbuffer.header.cksize, 2);
@@ -223,17 +309,22 @@ private:
                     continue;
                }
                
-               // TODO: Streamable interface
-               size_t samples = cbuffer.header.cksize / short.sizeof; // 16-bit PCM
-               data_s16 = new short[samples];
+               // Found Data Chunk, prepare stuff
+          
+               sample_size = fmtchunk.channels * (fmtchunk.samplebits/8);
+               
+               sample_count = cbuffer.header.cksize / sample_size;
+               /*data_s16 = new short[samples];
                if (file.rawRead(data_s16).length < samples)
-                    throw new Exception(ETOOSMALL);
+                    throw new Exception(ETOOSMALL);*/
+               
+               ready = true;
                return;
           }
           
           // Can't find "data" chunk
           throw new Exception(ENODATA);
-     }    
+     }
 }
 
 private
