@@ -469,7 +469,7 @@ class Asound
                 if (recover < 0)
                     throw new AsoundException(error, "snd_pcm_recover");
             }
-            if (readn == 0)
+            if (readn <= 0)
                 continue;
             cb(buffer, cast(size_t)readn, status);
         }
