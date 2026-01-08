@@ -11,7 +11,7 @@ import main;
 enum PI2 = PI * 2;
 enum PI4 = PI * 4;
 
-// 50 or 60 ±0.5 Hz
+// 50 or 60 ±0.1 Hz Maximum
 
 // Inspiration: https://halcy.de/blog/2025/02/09/measuring-power-network-frequency-using-junk-you-have-in-your-closet/
 // https://gist.github.com/halcy/7fb41ae9457f25eb5d67fa0d2ee57aaf
@@ -98,7 +98,7 @@ unittest
 /// Apply a Blackman Window function to a sample.
 /// Params:
 ///   v = Float value between -1.0 to 1.0.
-///   n = Index.
+///   n = Sample index.
 ///   N = Total amount of samples.
 /// Returns: New sample value.
 F blackman_window(F = float)(F v, ptrdiff_t n, ptrdiff_t N)
@@ -124,7 +124,7 @@ or by padding the window with 0's which will essentially adds interpolated bins.
 */
 class FreqAnalyzer
 {
-    this(size_t binsize = _32K)
+    this(size_t binsize)
     {
         this.binsize = binsize;
         o = new Fft(binsize);
@@ -140,7 +140,7 @@ class FreqAnalyzer
         if (isFloatingPoint!F)
     {
         if (samples.length != binsize) // due to class Fft
-            return Complex!float();
+            return throw new Exception("Sample count not 2-based");
         
         // Get bin
         size_t binidx = fftbinidx(target, binsize, rate);
@@ -156,11 +156,11 @@ class FreqAnalyzer
     ///   rate = Sampling rate.
     ///   target = Frequency target.
     /// Returns: Bucket for target frequency.
-    Complex!F dftfreq(F = float)(F[] samples, int rate, float target)
+    Complex!F rfftfreq(F = float)(F[] samples, int rate, float target)
         if (isFloatingPoint!F)
     {
         if (samples.length != binsize) // Consistency with fftfreq
-            return Complex!float();
+            return throw new Exception("Sample count not 2-based");
         
         int N = cast(int)samples.length;
         int k = cast(int)(target / rate * N); // Calculate the bin index for frequency f0
@@ -175,6 +175,7 @@ class FreqAnalyzer
         
         return c;
     }
+    alias dftfreq = rfftfreq;
     
 private:
     enum _64K = 1 << 16;
