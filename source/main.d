@@ -1,6 +1,5 @@
 module main;
 
-import snddrv.asound : Asound, AsoundConfig, SND_PCM_FORMAT_UNKNOWN, AFORMATS;
 import std.format : format;
 import std.getopt;
 import std.stdio;
@@ -106,55 +105,10 @@ int main(string[] args)
     
     switch (action) {
     case "list": // list input-capable devices
-        writeln("Input devices (ALSA):");
-        scope Asound alsa = new Asound();
-        foreach (dev; alsa.listPCMDevices())
-        {
-            writeln(dev.name);
-            
-            foreach (desc; dev.descriptions)
-            {
-                writeln("    ", desc);
-            }
-            // Test formats
-            write("    Formats: ");
-            int p;
-            foreach (fmt; AFORMATS)
-            {
-                try if (alsa.samplingFormatAvailableForDevice(dev.name, fmt.format))
-                {
-                    if (p++) write(", ");
-                    write(fmt.name);
-                }
-                catch (Exception ex)
-                {
-                    
-                }
-            }
-            writeln();
-        }
+        powerwatch.list();
         break;
     case "list-all": // list all sound interfaces
-        writeln("ALSA device list:");
-        foreach (ref dev; new Asound().listDevices())
-        {
-            writeln("- ", dev.id);
-            writeln("  ", dev.driver);
-            writeln("  ", dev.name);
-            writeln("  ", dev.longname);
-            writeln("  ", dev.mixername);
-            writeln("  ", dev.components);
-            if (dev.pcm_inputs)
-            {
-                write("  Inputs: ");
-                foreach (i, ref pcm; dev.pcm_inputs)
-                {
-                    if (i) write(", ");
-                    write(pcm);
-                }
-                writeln();
-            }
-        }
+        powerwatch.listAll();
         break;
     case "listen": // to interface
         if (!opts.device)
@@ -162,16 +116,7 @@ int main(string[] args)
             throw new Exception("Need audio interface");
         }
         
-        // TODO: powerwatch module should take care of the ALSA config, not CLI
-        AsoundConfig config = AsoundConfig(
-            opts.rate,   // rate
-            1,              // channels
-            //opts.rate,   // period/bin size
-            opts.binsize,   // period/bin size
-            SND_PCM_FORMAT_UNKNOWN // format
-        );
-        
-        powerwatch.listen(opts.device, config, opts.target, opts.binsize, opts.verbose);
+        powerwatch.listen(opts.device, opts.rate, opts.target, opts.binsize, opts.verbose);
         break;
     case "analyze": // analyze sound file (or do "analyze-json"/--json)
         if (args.length < 2)
@@ -201,7 +146,7 @@ int main(string[] args)
         tests.bench(opts.binsize);
         break;
     case "test-write":
-        tests.write_waves();
+        tests.writeWaves();
         break;
     case "help": goto Lhelp;
     case "version": CLI_version(); break;

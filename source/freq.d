@@ -8,8 +8,8 @@ import std.numeric : Fft, fft;
 import std.traits : isFloatingPoint;
 import main;
 
-enum PI2 = PI * 2;
-enum PI4 = PI * 4;
+enum float PI2 = PI * 2;
+enum float PI4 = PI * 4;
 
 // 50 or 60 ±0.1 Hz Maximum
 

@@ -162,28 +162,87 @@ void dumpbuffer(string path, void *buffer, size_t totalsamples, SamplingFormat f
     }
 }
 
-void listen(string device, AsoundConfig config, int targetfreq, int binsize, bool verbose)
+void list()
 {
+    writeln("Input devices (ALSA):");
+    scope Asound alsa = new Asound();
+    foreach (dev; alsa.listPCMDevices())
+    {
+        writeln(dev.name);
+        
+        foreach (desc; dev.descriptions)
+        {
+            writeln("    ", desc);
+        }
+        // Test formats
+        write("    Formats: ");
+        int p;
+        foreach (fmt; AFORMATS)
+        {
+            try if (alsa.samplingFormatAvailableForDevice(dev.name, fmt.format))
+            {
+                if (p++) write(", ");
+                write(fmt.name);
+            }
+            catch (Exception ex)
+            {
+                
+            }
+        }
+        writeln();
+    }
+}
+
+void listAll()
+{
+    writeln("ALSA device list:");
+    foreach (ref dev; new Asound().listDevices())
+    {
+        writeln("- ", dev.id);
+        writeln("  ", dev.driver);
+        writeln("  ", dev.name);
+        writeln("  ", dev.longname);
+        writeln("  ", dev.mixername);
+        writeln("  ", dev.components);
+        if (dev.pcm_inputs)
+        {
+            write("  Inputs: ");
+            foreach (i, ref pcm; dev.pcm_inputs)
+            {
+                if (i) write(", ");
+                write(pcm);
+            }
+            writeln();
+        }
+    }
+}
+
+void listen(string device, int sample_rate, int target_frequency, int binsize, bool verbose)
+{
+    // HACK: binsize being period_size
+    AsoundConfig config = AsoundConfig(
+        sample_rate,
+        1,
+        binsize,
+        SND_PCM_FORMAT_UNKNOWN
+    );
+    
     scope Asound alsa = new Asound();
     
     // Pick highest quality format
-    if (config.format == SND_PCM_FORMAT_UNKNOWN)
+    // TODO: Support BE formats
+    static immutable int[] supported = [
+        SND_PCM_FORMAT_FLOAT_LE,
+        //SND_PCM_FORMAT_S32_LE,
+        //SND_PCM_FORMAT_S24_LE,
+        SND_PCM_FORMAT_S16_LE,
+    ];
+    foreach (int fmt; supported)
     {
-        // TODO: Support BE formats
-        // Supported formats
-        static immutable int[] supported = [
-            SND_PCM_FORMAT_FLOAT_LE,
-            //SND_PCM_FORMAT_S32_LE,
-            //SND_PCM_FORMAT_S24_LE,
-            SND_PCM_FORMAT_S16_LE,
-        ];
-        foreach (int fmt; supported)
+        if (alsa.samplingFormatAvailableForDevice(device, fmt))
         {
-            if (alsa.samplingFormatAvailableForDevice(device, fmt))
-            {
-                config.format = fmt;
-                break;
-            }
+            config.format = fmt;
+            break;
         }
     }
     if (config.format == SND_PCM_FORMAT_UNKNOWN)
@@ -262,7 +321,7 @@ void listen(string device, AsoundConfig config, int targetfreq, int binsize, boo
         stderr.writeln("Listening through ", device, "...");
         stderr.writeln("Ch = ", config.channels);
         stderr.writeln("Fm = ", Asound.formatString(config.format));
-        stderr.writeln("Tf = ", targetfreq);
+        stderr.writeln("Tf = ", target_frequency);
         stderr.writeln("Bs = ", binsize);
         stderr.writeln("Ps = ", config.period_size);
         stderr.writeln("Sr = ", config.sample_rate);
@@ -345,7 +404,7 @@ void listen(string device, AsoundConfig config, int targetfreq, int binsize, boo
         Duration d0 = sw.peek();
         // TODO: fix slice to select up to binsize or whatever, this is just bad
         float[] samples = dst[0..binsize];
-        Complex!float frame = analyzer.fftfreq!float(samples, config.sample_rate, targetfreq);
+        Complex!float frame = analyzer.fftfreq!float(samples, config.sample_rate, target_frequency);
         float mag = magnitude!float(frame);
         Duration d1 = sw.peek();
         

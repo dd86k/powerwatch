@@ -53,7 +53,7 @@ void bench(size_t binsize)
     writeln("DFT: ", ReducedDuration(dftdur));
 }
 
-void write_waves()
+void writeWaves()
 {
     // Better to generate the same wave for both
     enum TARGET = 60;     // Hz
