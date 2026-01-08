@@ -22,22 +22,50 @@ import wav; // TODO: move to file/wav.d
 //       data should be zero'd instead of just ending the loop.
 // TODO: test-listen
 //       Listen and dump after AMT (or later dynamic value)
+// TODO: Analyzer class
+//       With buffering (think of "sponge construction", process when full)
 
-struct ReducedDur
+enum S16MAX = 32767.0;
+// Turn a S16 sample to F32
+pragma(inline, true)
+float samplef32(short sample)
 {
-    int t;
-    string unit;
+    return cast(float)sample / S16MAX;
 }
-// Simplify time.
-ReducedDur reduceDuration(Duration d)
+
+struct ReducedDuration
 {
-    if (d >= dur!"msecs"(1))
-        return ReducedDur(cast(int)d.total!"msecs"(), "ms");
-    if (d >= dur!"usecs"(1))
-        return ReducedDur(cast(int)d.total!"usecs"(), "µs");
-    if (d >= dur!"hnsecs"(1))
-        return ReducedDur(cast(int)d.total!"hnsecs"(), "hs");
-    return ReducedDur(cast(int)d.total!"nsecs"(), "ns");
+    int base;
+    string unit;
+    
+    this(Duration duration)
+    {
+        if (duration >= dur!"msecs"(1))
+        {
+            base = cast(int)duration.total!"msecs"();
+            unit = "ms";
+        }
+        else if (duration >= dur!"usecs"(1))
+        {
+            base = cast(int)duration.total!"usecs"();
+            unit = "µs";
+        }
+        else if (duration >= dur!"hnsecs"(1))
+        {
+            base = cast(int)duration.total!"hnsecs"();
+            unit = "hs";
+        }
+        else
+        {
+            base = cast(int)duration.total!"nsecs"();
+            unit = "ns";
+        }
+    }
+    
+    string toString() const
+    {
+        return format("%s %s", base, unit);
+    }
 }
 
 enum SamplingFormat
@@ -82,10 +110,6 @@ immutable SamplingFormat[] SUPPORTED_FORMATS = [
     SamplingFormat.s32le,
     SamplingFormat.f32le,
 ];
-
-deprecated alias Sample = float; // Sampling type (short=S16, float=IEEE 32-bit floats)
-alias BinPrecision = float;
-alias Bin = Complex!BinPrecision;
 
 // TODO: Add "unknown" for learning
 enum State { down, up }
@@ -320,7 +344,7 @@ void listen(string device, AsoundConfig config, int targetfreq, int binsize, boo
             short *src = cast(short*)buffer;
             for (int i; i < N; i++)
             {
-                float f = cast(float)src[i] / 32767.0; // S16 -> F32
+                float f = cast(float)src[i] / S16MAX; // S16 -> F32
                 if (apply_window)
                     f = blackman_window!float(f, i, N);
                 dst[i] = f;
@@ -341,8 +365,8 @@ void listen(string device, AsoundConfig config, int targetfreq, int binsize, boo
         // Print processed frame info
         if (verbose)
         {
-            ReducedDur rd = reduceDuration(d1 - d0);
-            stderr.writefln("PT = %3d %s, M = %10.1f", rd.t, rd.unit, mag);
+            ReducedDuration rd = ReducedDuration(d1 - d0);
+            stderr.writefln("PT = %3d %s, M = %10.1f", rd.base, rd.unit, mag);
         }
         
         // Threshold needs to be set after some time.
@@ -575,32 +599,45 @@ int main(string[] args)
         
         short[] samples = wav.getData16bit();
         
+        // interrim float[] buffer
+        float[] inbuffer = new float[opts.binsize];
+        
         //
         // Cutoff checking
         //
+        // TODO: Redo section with a generic class that does buffering
         scope FreqAnalyzer analyzer = new FreqAnalyzer(opts.binsize);
         bool warning_cutoff = false;
         float timerate = cast(float)opts.binsize/rate; // time rate
         float time = timerate / 2;
         float threshold = 0.0;
-        foreach (s; samples.chunks(opts.binsize))
+        foreach (chunk; samples.chunks(opts.binsize))
         {
-            if (s.length != opts.binsize)
+            // last chunk will be not a power of 2
+            // could be infilled with zero
+            if (chunk.length != opts.binsize)
                 break;
             
-            ResultFrame frame = analyzer.fft(s, rate, opts.target);
+            for (size_t i; i < chunk.length; ++i)
+            {
+                inbuffer[i] = samplef32( chunk[i] );
+            }
+            
+            Complex!float frame = analyzer.fftfreq(inbuffer, rate, opts.target);
+            
+            float mag = magnitude!float(frame);
             
             // Take first result as threshold
             if (threshold == 0.0)
             {
-                threshold = frame.magnitude / 4;
+                threshold = mag / 4;
                 // Even if this is still zero, it'll retry next iteration
                 // If there are no results, then maybe the signal is too weak
             }
             
             if (warning_cutoff == false)
             {
-                if (frame.magnitude < threshold)
+                if (mag < threshold)
                 {
                     stderr.writefln("~%7.3f: DOWN", time);
                     warning_cutoff = true;
@@ -608,7 +645,7 @@ int main(string[] args)
             }
             else
             {
-                if (frame.magnitude >= threshold)
+                if (mag >= threshold)
                 {
                     stderr.writefln("~%7.3f: UP", time);
                     warning_cutoff = false;
@@ -653,6 +690,8 @@ int main(string[] args)
         int rate = wav.sampleRate();
         short[] samples = wav.getData16bit();
         
+        float[] inbuffer = new float[opts.binsize];
+        
         scope FreqAnalyzer analyzer = new FreqAnalyzer(opts.binsize);
         float timerate = cast(float)opts.binsize/rate; // time rate
         float time = 0.0;
@@ -660,10 +699,19 @@ int main(string[] args)
         {
             if (s.length != opts.binsize)
                 break;
-            ResultFrame frame = analyzer.fft(s, rate, opts.target);
-            float t2 = time+timerate;
-            with (frame)
-            writefln(" %5d Hz: T=%8.3f-%8.3f, Mg=%10.0f, Ph=%9f", opts.target, time, t2, magnitude, phase);
+            
+            for (size_t i; i < opts.binsize; i++)
+            {
+                inbuffer[i] = samplef32(samples[i]);
+            }
+            
+            Complex!float bin = analyzer.fftfreq(inbuffer, rate, opts.target);
+            
+            float t2 = time + timerate;
+            
+            writefln(" %5d Hz: T=%8.3f-%8.3f, Mg=%10.0f, Ph=%9f",
+                opts.target, time, t2, magnitude(bin), phase(bin));
+            
             time = t2;
         }
         break;
@@ -686,6 +734,7 @@ int main(string[] args)
         writeln("samplebits    : ", samplebits);
         }
         
+        // TODO: Give a count without reading samples
         writeln("samples       : ", wav.readallS16().length);
         break;
     case "test-bench":
@@ -695,9 +744,9 @@ int main(string[] args)
         enum TARGET = 60;     // Hz
         enum RATE   = 48_000; // Hz
         enum SECS   = 30;     // 30s * 48000hz * short.sizeof = ~2.75 MiB
-        short[] samples = new short[RATE * SECS]; // S16 PCM
+        float[] samples = new float[RATE * SECS]; // S16 PCM
         for (size_t i; i < samples.length; i++)
-            samples[i] = cast(short)(short.max * sin(2 * PI * TARGET * i / RATE));
+            samples[i] = sin(2 * PI * TARGET * i / RATE);
         writefln("SETTINGS: RATE=%d SECS=%d", RATE, SECS);
         
         scope FreqAnalyzer analyzer = new FreqAnalyzer(opts.binsize);
@@ -708,7 +757,7 @@ int main(string[] args)
         {
             if (s.length != opts.binsize)
                 break;
-            analyzer.fft(s, RATE, TARGET, false);
+            analyzer.fftfreq(s, RATE, TARGET);
         }
         sw.stop();
         Duration fftdur = sw.peek();
@@ -719,15 +768,15 @@ int main(string[] args)
         {
             if (s.length != opts.binsize)
                 break;
-            analyzer.dft(s, RATE, TARGET, false);
+            analyzer.dftfreq(s, RATE, TARGET);
         }
         sw.stop();
         Duration dftdur = sw.peek();
         
-        ReducedDur rdfft = reduceDuration(fftdur);
-        ReducedDur rddft = reduceDuration(dftdur);
-        writefln("FFT: %3d %s", rdfft.t, rdfft.unit);
-        writefln("DFT: %3d %s", rddft.t, rddft.unit);
+        ReducedDuration rdfft = ReducedDuration(fftdur);
+        writefln("FFT: %3d %s", rdfft.base, rdfft.unit);
+        ReducedDuration rddft = ReducedDuration(dftdur);
+        writefln("DFT: %3d %s", rddft.base, rddft.unit);
         break;
     case "test-write":
         // Better to generate the same wave for both

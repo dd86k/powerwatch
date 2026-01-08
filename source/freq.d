@@ -6,6 +6,7 @@ import std.math.constants : PI;
 import std.math.trigonometry : cos, sin, atan2;
 import std.numeric : Fft, fft;
 import std.traits : isFloatingPoint;
+import main;
 
 enum PI2 = PI * 2;
 enum PI4 = PI * 4;
@@ -60,6 +61,7 @@ F magnitude(F = float)(Complex!F bin)
 {
     return sqrt(bin.re * bin.re + bin.im * bin.im);
 }
+// TODO: magnitude unittesting
 
 /// Calculate the current phase of a given frequency bin.
 /// Params: bin = Selected bin.
@@ -68,19 +70,7 @@ F phase(F = float)(Complex!F bin)
 {
     return atan2(bin.im, bin.re); // arctangent
 }
-
-// TODO: Deprecate ResultFrame/Result
-struct ResultFrame
-{
-    float magnitude;
-    float phase;
-}
-struct Result
-{
-    ResultFrame[] frames;
-}
-
-// NOTE: Mnemonic to get a clearer picture of operations
+// TODO: phase unittesting
 
 // Get frequency given fft/sound parameters.
 // e.g., because 44100 samples/s / 64K = ~0.672912598 (frequency resolution for each bin)
@@ -95,14 +85,14 @@ unittest
 }
 
 // Get bin to frequency target given its resolution
-size_t fftbinidx(int target, size_t binsize, int samplerate)
+size_t fftbinidx(float target, size_t binsize, int samplerate)
 {
     import std.math : round;
-    return cast(size_t)(round(cast(float)target * binsize / samplerate));
+    return cast(size_t)(round(target * binsize / samplerate));
 }
 unittest
 {
-    assert(fftbinidx(1209, 4 * 1024, 44100) == 112); // 112.3
+    assert(fftbinidx(1209.0, 4 * 1024 /* 4K bins */, 44100 /* 44.1 kHz */) == 112); // 112.3
 }
 
 /// Apply a Blackman Window function to a sample.
@@ -140,67 +130,13 @@ class FreqAnalyzer
         o = new Fft(binsize);
     }
     
-    ResultFrame fft(short[] samples, int rate, int target = 60, bool apply_window = true)
-    {
-        if (samples.length != binsize) // due to class Fft
-            return ResultFrame();
-        
-        // Apply Blackman window
-        if (apply_window)
-        {
-            int N = cast(int)samples.length;
-            for (int i; i < N; i++)
-            {
-                float f = cast(float)samples[i] / 32767;
-                samples[i] = cast(short)(blackman_window!float(f, i, N) * 32767);
-            }
-        }
-        
-        // Get bin
-        size_t binidx = fftbinidx(target, binsize, rate);
-        Complex!float[] bins = o.fft!float(samples); // base-2 sizes only
-        if (binidx >= bins.length / 2)
-            throw new Exception("Target out of Nyquist frequency");
-        Complex!float bin = bins[binidx];
-        
-        return ResultFrame(magnitude!float(bin), phase!float(bin));
-    }
-    
-    ResultFrame dft(short[] samples, int rate, int target = 60, bool apply_window = true)
-    {
-        // Apply Blackman window
-        if (apply_window)
-        {
-            int N = cast(int)samples.length;
-            for (int i; i < N; i++)
-            {
-                float f = cast(float)samples[i] / 32767;
-                samples[i] = cast(short)(blackman_window!float(f, i, N) * 32767);
-            }
-        }
-        
-        int N = cast(int)samples.length;
-        int k = cast(int)(cast(float)target / rate * N); // Calculate the bin index for frequency f0
-        Complex!float c = Complex!float(0.0, 0.0);
-        
-        for (size_t n = 0; n < N; n++)
-        {
-            float angle = PI2 * k * n / N;
-            float f = samples[n] / 32767;
-            c.re += f * cos(angle);
-            c.im -= f * sin(angle);
-        }
-        
-        return ResultFrame(magnitude!float(c), phase!float(c));
-    }
-    
     /// Perform a Fast Fourier Transform and select bin closest to frequency target.
     /// Params:
     ///   samples = Samples (should be exactly binsize).
     ///   rate = Sampling rate.
     ///   target = Frequency target.
     /// Returns: Bucket for target frequency.
-    Complex!F fftfreq(F = float)(F[] samples, int rate, int target)
+    Complex!F fftfreq(F = float)(F[] samples, int rate, float target)
         if (isFloatingPoint!F)
     {
         if (samples.length != binsize) // due to class Fft
@@ -220,14 +156,14 @@ class FreqAnalyzer
     ///   rate = Sampling rate.
     ///   target = Frequency target.
     /// Returns: Bucket for target frequency.
-    Complex!F dftfreq(F = float)(F[] samples, int rate, int target)
+    Complex!F dftfreq(F = float)(F[] samples, int rate, float target)
         if (isFloatingPoint!F)
     {
         if (samples.length != binsize) // Consistency with fftfreq
             return Complex!float();
         
         int N = cast(int)samples.length;
-        int k = cast(int)(cast(F)target / rate * N); // Calculate the bin index for frequency f0
+        int k = cast(int)(target / rate * N); // Calculate the bin index for frequency f0
         Complex!F c = Complex!F(0.0, 0.0);
         
         for (size_t n = 0; n < N; n++)
