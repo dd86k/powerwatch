@@ -219,7 +219,7 @@ void listAll()
     }
 }
 
-void listen(string device, int sample_rate, int target_frequency, int binsize, bool verbose)
+void listen(string device, int sample_rate, int target_frequency, int binsize, bool verbose, string window_name)
 {
     // HACK: binsize being period_size
     AsoundConfig config = AsoundConfig(
@@ -277,9 +277,20 @@ void listen(string device, int sample_rate, int target_frequency, int binsize, b
         config.channels = 0; // HACK: do not change channels in alsa by force
     }
     
+    
     // Select window function
-    float function(float n, ptrdiff_t n, ptrdiff_t N) window =
-        &hann_window!float;
+    float function(float n, ptrdiff_t n, ptrdiff_t N) window;
+    switch (window_name) {
+    case null, "none": break; // keep null
+    case "blackman":
+        window = &blackman_window!float;
+        break;
+    case "hann":
+        window = &hann_window!float;
+        break;
+    default:
+        throw new Exception(text("Unknown window function: ", window_name));
+    }
     
     // TODO: These should be dynamic settings
     /// Time (seconds) that buffer should hold
@@ -352,6 +363,7 @@ void listen(string device, int sample_rate, int target_frequency, int binsize, b
         stderr.writeln("Bs = ", binsize, " bins");
         stderr.writeln("Ps = ", config.period_size, " samples");
         stderr.writeln("Sr = ", config.sample_rate, " samples/second");
+        stderr.writeln("Wf = ", window_name ? window_name : "none");
         stderr.writefln("Re = %f Hz/bin", freqresolution(binsize, config.sample_rate));
     }
     

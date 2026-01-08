@@ -13,6 +13,7 @@ static import tests;
 enum DEFAULT_TARGET   = 60;
 enum DEFAULT_BINSIZE  = 32 * 1024;
 enum DEFAULT_SAMPRATE = 48000;
+enum DEFAULT_WINDOW   = "blackman";
 
 struct CLIOptions
 {
@@ -26,6 +27,8 @@ struct CLIOptions
     int rate    = DEFAULT_SAMPRATE;
     /// PCM device to listen to.
     string device;
+    /// Window function
+    string window = DEFAULT_WINDOW;
     
     /// 
     bool verbose;
@@ -53,6 +56,7 @@ void CLI_version()
 immutable string MSG_binsize = format("Set bin size (default=%d)", DEFAULT_BINSIZE);
 immutable string MSG_target  = format("Target frequency in Hertz (default=%d)", DEFAULT_TARGET);
 immutable string MSG_rate    = format("Target sample rate for recording (default=%d)", DEFAULT_SAMPRATE);
+immutable string MSG_window  = format("Select window function, 'none' to remove (default=%s)", DEFAULT_WINDOW);
 
 int main(string[] args)
 {
@@ -74,6 +78,7 @@ int main(string[] args)
         },
         "target",    MSG_target, &opts.target,
         "rate",      MSG_rate, &opts.rate,
+        "window",    MSG_window, &opts.window,
         "device",    "Device to listen from (required for 'listen')", &opts.device,
         "V|verbose", "Be verbose", &opts.verbose,
         "version",   "Show version and quit", &CLI_version);
@@ -128,7 +133,8 @@ int main(string[] args)
             throw new Exception("Need audio interface");
         }
         
-        powerwatch.listen(opts.device, opts.rate, opts.target, opts.binsize, opts.verbose);
+        with (opts)
+        powerwatch.listen(device, rate, target, binsize, verbose, window);
         break;
     case "analyze": // analyze sound file (or do "analyze-json"/--json)
         if (args.length < 2)
